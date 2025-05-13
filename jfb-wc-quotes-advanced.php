@@ -548,8 +548,19 @@ function jfbwqa_handle_order_action( $order ) {
 
     // Prepare Headers
     $headers = ["Content-Type: text/html; charset=UTF-8"];
-    $from_name = get_option('woocommerce_email_from_name'); $from_email = get_option('woocommerce_email_from_address');
-    if ( $from_name && $from_email ) $headers[] = "From: " . wp_specialchars_decode($from_name) . " <$from_email>";
+    
+    // Dynamically set From address to noreply@current_domain
+    $site_domain = wp_parse_url(get_site_url(), PHP_URL_HOST);
+    // Remove www. if it exists to keep the domain cleaner for the email, though it usually doesn't matter for the local part
+    if (substr($site_domain, 0, 4) === 'www.') {
+        $site_domain = substr($site_domain, 4);
+    }
+    $from_email_override = 'noreply@' . $site_domain;
+    $from_name_override = wp_specialchars_decode(get_bloginfo('name'), ENT_QUOTES); // Use Site Title as From Name
+
+    $headers[] = "From: " . $from_name_override . " <" . $from_email_override . ">";
+
+    // Use original Reply-To and CC from settings if they are valid
     if ( !empty($reply_to_email) && is_email($reply_to_email) ) $headers[] = "Reply-To: <{$reply_to_email}>";
     if ( !empty($cc_email) && is_email($cc_email) ) $headers[] = "Cc: <{$cc_email}>";
 
@@ -756,10 +767,57 @@ function jfbwqa_settings_init() {
     add_settings_field( 'email_reply_to', __('Reply-To Email', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'email_reply_to', 'type' => 'email'] );
     add_settings_field( 'email_cc', __('CC Email', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'email_cc', 'type' => 'email'] );
     add_settings_field( 'email_default_body', __('Email Body Template', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_wp_editor', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'email_default_body'] ); // Desc rendered in section callback
+
+    // Email Deliverability Section
+    add_settings_section(
+        'jfbwqa_section_deliverability',
+        __('Email Deliverability (DNS Setup)', 'jfb-wc-quotes-advanced'),
+        'jfbwqa_render_section_deliverability_desc',
+        JFBWQA_SETTINGS_SLUG
+    );
+    add_settings_field(
+        'deliverability_info',
+        __('Improving Email Delivery', 'jfb-wc-quotes-advanced'),
+        'jfbwqa_render_field_deliverability_info',
+        JFBWQA_SETTINGS_SLUG,
+        'jfbwqa_section_deliverability'
+    );
 }
 function jfbwqa_render_section_email_desc() {
      echo '<p>' . esc_html__('Customize the email sent via the order action.', 'jfb-wc-quotes-advanced') . '</p>';
      // Add placeholders list here if desired (as in v1.14 render_section_email)
+}
+function jfbwqa_render_section_deliverability_desc() {
+    echo '<p>' . esc_html__('To significantly improve the chances of your estimate emails reaching the inbox and not being marked as spam, it is highly recommended to configure certain DNS records for your domain (the domain emails are sent from, e.g., luxeandpetals.com). This plugin now sends emails from "noreply@yourdomain.com".', 'jfb-wc-quotes-advanced') . '</p>';
+}
+
+function jfbwqa_render_field_deliverability_info() {
+    $site_domain = wp_parse_url(get_site_url(), PHP_URL_HOST);
+    if (substr($site_domain, 0, 4) === 'www.') {
+        $site_domain = substr($site_domain, 4);
+    }
+    $from_address_example = 'noreply@' . $site_domain;
+
+    echo '<p>';
+    echo '<strong>' . esc_html__('Emails sent by this plugin will use the "From" address:', 'jfb-wc-quotes-advanced') . '</strong> <code>' . esc_html($from_address_example) . '</code><br>';
+    echo esc_html__('Your "Reply-To" address from the settings above will still be used if set.', 'jfb-wc-quotes-advanced');
+    echo '</p>';
+
+    echo '<h4>' . esc_html__('Key DNS Records:', 'jfb-wc-quotes-advanced') . '</h4>';
+    echo '<ol>';
+    echo '<li><strong>' . esc_html__('SPF (Sender Policy Framework):', 'jfb-wc-quotes-advanced') . '</strong> ' . esc_html__('An SPF record lists all the servers authorized to send emails on behalf of your domain. If your web host sends emails for you (e.g., via PHP mail), their IP addresses or includes must be in your SPF record. If you use a third-party email service (like SendGrid, Mailgun, Google Workspace), they will provide the SPF details to add.', 'jfb-wc-quotes-advanced') . '<br>';
+    echo '<em>' . esc_html__('Example:', 'jfb-wc-quotes-advanced') . '</em> <code>v=spf1 include:mail.yourhost.com include:_spf.google.com ~all</code></li>';
+
+    echo '<li><strong>' . esc_html__('DKIM (DomainKeys Identified Mail):', 'jfb-wc-quotes-advanced') . '</strong> ' . esc_html__('DKIM adds a digital signature to your emails, allowing receiving servers to verify that the email was actually sent by an authorized server and hasn\'t been tampered with. Your email sending service or hosting provider will typically provide a DKIM key (a long string of text) to add as a TXT record in your DNS.', 'jfb-wc-quotes-advanced') . '<br>';
+    echo '<em>' . esc_html__('Example (selector and key vary):', 'jfb-wc-quotes-advanced') . '</em> <code>selector._domainkey.' . esc_html($site_domain) . ' IN TXT "v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQ..."</code></li>';
+
+    echo '<li><strong>' . esc_html__('DMARC (Domain-based Message Authentication, Reporting & Conformance):', 'jfb-wc-quotes-advanced') . '</strong> ' . esc_html__('A DMARC record tells receiving mail servers what to do if an email claims to be from your domain but fails SPF or DKIM checks (e.g., reject it, quarantine it, or do nothing). It also allows you to receive reports on email activity. Start with a monitoring policy (p=none).', 'jfb-wc-quotes-advanced') . '<br>';
+    echo '<em>' . esc_html__('Example (for monitoring):', 'jfb-wc-quotes-advanced') . '</em> <code>_dmarc.' . esc_html($site_domain) . ' IN TXT "v=DMARC1; p=none; rua=mailto:dmarcreports@' . esc_html($site_domain) . '"</code></li>';
+    echo '</ol>';
+
+    echo '<p><strong>' . esc_html__('Where to Add These Records:', 'jfb-wc-quotes-advanced') . '</strong> ' . esc_html__('You typically add these TXT records in the DNS management zone for your domain, which is usually provided by your domain registrar (e.g., GoDaddy, Namecheap) or your hosting provider if they also manage your DNS.', 'jfb-wc-quotes-advanced') . '</p>';
+    echo '<p><strong>' . esc_html__('Using a Transactional Email Service:', 'jfb-wc-quotes-advanced') . '</strong> ' . esc_html__('For best results, consider using a dedicated transactional email service (e.g., SendGrid, Mailgun, Postmark, Amazon SES) via a WordPress SMTP plugin. These services specialize in email deliverability and provide clear instructions for SPF/DKIM setup.', 'jfb-wc-quotes-advanced') . '</p>';
+    echo '<p><small>' . esc_html__('Note: DNS changes can take some time to propagate (up to 48 hours, but often much faster). After setting up these records, use online tools to verify their correctness.', 'jfb-wc-quotes-advanced') . '</small></p>';
 }
 
 // --- Field Rendering Callbacks (Slightly simplified from v1.14) ---
