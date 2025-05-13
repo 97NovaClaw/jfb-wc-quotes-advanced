@@ -537,9 +537,12 @@ function jfbwqa_handle_order_action( $order ) {
     // *** DEBUG LOGGING START ***
     jfbwqa_write_log("DEBUG: jfbwqa_handle_order_action() - \$email_html_content (raw from template) for order #{$order_id}: " . substr($email_html_content, 0, 1000) . (strlen($email_html_content) > 1000 ? '...' : ''));
     // *** DEBUG LOGGING END ***
-    $email_html_content = $mailer ? $mailer->wrap_message($heading, $email_html_content) : $email_html_content; // Wrap if mailer exists
+    // Conditionally wrap the message: only if it doesn't already seem to be a full HTML document.
+    if (strpos($email_html_content, '</html>') === false) {
+        $email_html_content = $mailer ? $mailer->wrap_message($heading, $email_html_content) : $email_html_content;
+    }
     // *** DEBUG LOGGING START ***
-    jfbwqa_write_log("DEBUG: jfbwqa_handle_order_action() - \$email_html_content (wrapped) for order #{$order_id}: " . substr($email_html_content, 0, 1000) . (strlen($email_html_content) > 1000 ? '...' : ''));
+    jfbwqa_write_log("DEBUG: jfbwqa_handle_order_action() - \$email_html_content (after conditional wrap) for order #{$order_id}: " . substr($email_html_content, 0, 1000) . (strlen($email_html_content) > 1000 ? '...' : ''));
     // *** DEBUG LOGGING END ***
 
 
