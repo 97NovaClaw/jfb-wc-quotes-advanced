@@ -29,7 +29,8 @@ do_action( 'woocommerce_email_header', $email_heading, $email ); ?>
 if ( ! empty( $email_body_content ) ) {
     // email_body_content already has placeholders (like [Order Details Table]) replaced
     // wpautop adds paragraph tags based on newlines in your setting for better formatting.
-    echo wp_kses_post( wpautop( wptexturize( $email_body_content ) ) );
+    // Removed wpautop as it can break HTML from placeholders like the order table
+    echo wp_kses_post( wptexturize( $email_body_content ) ); 
 }
 ?>
 
