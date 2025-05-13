@@ -1372,62 +1372,17 @@ function jfbwqa_render_prepared_quote_metabox_content( $post_or_order_object ) {
 // Renaming to avoid confusion with the meta box render function, and hooking to the item actions area
 function jfbwqa_render_quote_controls_for_actions( $order ) {
     if ( ! $order instanceof WC_Order ) {
-        // If $order is just an ID (as it is for woocommerce_order_item_add_action_buttons), get the order object
         $order = wc_get_order( $order );
-        if ( ! $order ) {
-            jfbwqa_write_log('ERROR: jfbwqa_render_quote_controls_for_actions - Could not get order object.');
-            // Don't echo here as it might break button layout, just log.
-            return;
-        }
+        if ( ! $order ) { return; } // Silently exit if order not found
     }
-    $order_id = $order->get_id();
-    jfbwqa_write_log("DEBUG: jfbwqa_render_quote_controls_for_actions called for order ID: {$order_id} (hook: woocommerce_order_item_add_action_buttons)");
-
-    wp_nonce_field( 'jfbwqa_save_quote_meta', 'jfbwqa_quote_meta_nonce' );
-
-    $custom_message = get_post_meta( $order_id, '_jfbwqa_quote_custom_message', true );
-    $include_pricing_value = get_post_meta( $order_id, '_jfbwqa_quote_include_pricing', true );
-    $include_pricing = ( $include_pricing_value === '' || $include_pricing_value === 'yes' ) ? 'yes' : 'no';
-
-    ob_start();
+    jfbwqa_write_log("DEBUG: Rendering 'Send Estimate Response' button for order ID: {$order->get_id()}");
     ?>
-    <div class="jfbwqa-quote-controls-after-buttons" style="clear: both; margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd; text-align: left;">
-        <h3 style="text-align: center; margin-bottom: 15px;"><?php esc_html_e('Prepare & Send Quote Email', 'jfb-wc-quotes-advanced'); ?></h3>
-        
-        <p><?php esc_html_e('Configure and send the prepared quote to the customer.', 'jfb-wc-quotes-advanced'); ?></p>
-
-        <div id="jfbwqa_custom_quote_message_area" style="margin-bottom:15px;">
-            <h4 style="margin-bottom: 5px;"><?php esc_html_e('Custom Message (Optional)', 'jfb-wc-quotes-advanced'); ?></h4>
-            <textarea id="jfbwqa_custom_quote_message" name="jfbwqa_custom_quote_message" style="width:100%; height: 100px;" placeholder="<?php esc_attr_e('This message will be added to the quote email...', 'jfb-wc-quotes-advanced'); ?>"><?php echo esc_textarea( $custom_message ); ?></textarea>
-        </div>
-
-        <div id="jfbwqa_include_pricing_area" style="margin-bottom:15px;">
-            <label><input type="checkbox" id="jfbwqa_include_pricing" name="jfbwqa_include_pricing" value="yes" <?php checked( $include_pricing, 'yes' ); ?> /> <?php esc_html_e('Include Pricing in this Quote', 'jfb-wc-quotes-advanced'); ?></label>
-        </div>
-
-        <div id="jfbwqa_available_placeholders_info" style="margin-bottom:15px; padding: 10px; background-color: #f8f8f8; border: 1px solid #e5e5e5;">
-            <strong><?php esc_html_e('Available Placeholders:', 'jfb-wc-quotes-advanced'); ?></strong><br>
-            <code>{order_number}</code>, <code>{customer_name}</code>, <code>{customer_first_name}</code>, <code>{site_title}</code>, etc.<br>
-            <?php esc_html_e('JetEngine fields: ', 'jfb-wc-quotes-advanced'); ?><code>{[your_jet_engine_field_key]}</code><br>
-            <code>[Order Details Table]</code> - inserts the items table.<br>
-            <code>{additional_message_from_admin}</code> - used for this custom message.
-        </div>
-
-        <div style="margin-top: 15px;">
-            <button type="button" id="jfbwqa_send_quote_button" class="button button-primary"><?php esc_html_e('Send Prepared Quote Email', 'jfb-wc-quotes-advanced'); ?></button>
-            <span id="jfbwqa_spinner" class="spinner" style="float:none; vertical-align: middle;"></span>
-            <p class="description"><?php esc_html_e('Clicking this will save the message/settings above and trigger the email.', 'jfb-wc-quotes-advanced'); ?></p>
-        </div>
-         <div id="jfbwqa_send_status_message" style="margin-top: 10px; padding: 10px; display:none;"></div>
-    </div>
+    <button type="button" id="jfbwqa_open_quote_modal_button" class="button">
+        <?php esc_html_e('Send Estimate Response', 'jfb-wc-quotes-advanced'); ?>
+    </button>
     <?php
-    $html_output = ob_get_clean();
-    echo $html_output; 
-    jfbwqa_write_log("DEBUG: jfbwqa_render_quote_controls_for_actions outputting HTML (approx length " . strlen($html_output) . "). Starts with: " . substr(preg_replace('/\s+/', ' ', $html_output), 0, 200));
+    // The rest of the controls will now be in a modal.
 }
-// Remove previous hook attempts
-// remove_action( 'woocommerce_admin_order_data_after_order_details', 'jfbwqa_render_quote_controls_section', 20 ); 
-// remove_action( 'woocommerce_admin_order_totals_after_total', 'jfbwqa_render_quote_controls_section', 10 );
 add_action( 'woocommerce_order_item_add_action_buttons', 'jfbwqa_render_quote_controls_for_actions', 20, 1 );
 
 /**
@@ -1519,6 +1474,57 @@ function jfbwqa_enqueue_order_edit_scripts( $hook ) {
             'error_text' => __('Error. See console or debug log.', 'jfb-wc-quotes-advanced'),
         ));
     }
+}
+
+/**
+ * Output HTML for the quote response modal in the admin footer.
+ */
+add_action( 'admin_footer-post.php', 'jfbwqa_output_quote_modal_html' ); // Only on post edit screens
+function jfbwqa_output_quote_modal_html() {
+    global $post;
+    if ( ! $post || 'shop_order' !== $post->post_type ) {
+        return; // Only output for shop_order edit screen
+    }
+    $order_id = $post->ID;
+    jfbwqa_write_log("DEBUG: jfbwqa_output_quote_modal_html attempting to render for order ID: {$order_id}");
+
+    // We still need to get existing values for the modal fields if they exist
+    $custom_message = get_post_meta( $order_id, '_jfbwqa_quote_custom_message', true );
+    $include_pricing_value = get_post_meta( $order_id, '_jfbwqa_quote_include_pricing', true );
+    $include_pricing = ( $include_pricing_value === '' || $include_pricing_value === 'yes' ) ? 'yes' : 'no';
+
+    ?>
+    <div id="jfbwqa-quote-response-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background-color:rgba(0,0,0,0.5); z-index:99999;">
+        <div style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); background-color:#fff; padding:20px; width:90%; max-width:600px; border-radius:5px; box-shadow: 0 5px 15px rgba(0,0,0,0.3);">
+            <h3 style="text-align: center; margin-top:0; margin-bottom: 15px;"><?php esc_html_e('Prepare & Send Estimate Response', 'jfb-wc-quotes-advanced'); ?></h3>
+            <button type="button" id="jfbwqa-modal-close" style="position:absolute; top:10px; right:10px; font-size:1.5em; line-height:1; background:none; border:none; cursor:pointer;">&times;</button>
+
+            <div id="jfbwqa_custom_quote_message_area_modal" style="margin-bottom:15px;">
+                <h4 style="margin-bottom: 5px;"><?php esc_html_e('Custom Message (Optional)', 'jfb-wc-quotes-advanced'); ?></h4>
+                <textarea id="jfbwqa_custom_quote_message_modal" name="jfbwqa_custom_quote_message" style="width:100%; height: 100px;" placeholder="<?php esc_attr_e('This message will be added to the quote email...', 'jfb-wc-quotes-advanced'); ?>"><?php echo esc_textarea( $custom_message ); ?></textarea>
+            </div>
+
+            <div id="jfbwqa_include_pricing_area_modal" style="margin-bottom:15px;">
+                <label><input type="checkbox" id="jfbwqa_include_pricing_modal" name="jfbwqa_include_pricing" value="yes" <?php checked( $include_pricing, 'yes' ); ?> /> <?php esc_html_e('Include Pricing in this Quote', 'jfb-wc-quotes-advanced'); ?></label>
+            </div>
+
+            <div id="jfbwqa_available_placeholders_info_modal" style="margin-bottom:15px; padding: 10px; background-color: #f8f8f8; border: 1px solid #e5e5e5; font-size:0.9em;">
+                <strong><?php esc_html_e('Available Placeholders:', 'jfb-wc-quotes-advanced'); ?></strong><br>
+                <code>{order_number}</code>, <code>{customer_name}</code>, <code>{customer_first_name}</code>, <code>{site_title}</code>, etc.<br>
+                <?php esc_html_e('JetEngine fields: ', 'jfb-wc-quotes-advanced'); ?><code>{[your_jet_engine_field_key]}</code><br>
+                <code>[Order Details Table]</code> - inserts the items table.<br>
+                <code>{additional_message_from_admin}</code> - used for this custom message.
+            </div>
+
+            <div style="margin-top: 15px; text-align:right;">
+                <button type="button" id="jfbwqa_send_quote_button_modal" class="button button-primary"><?php esc_html_e('Send Email', 'jfb-wc-quotes-advanced'); ?></button>
+                <span id="jfbwqa_spinner_modal" class="spinner" style="float:none; vertical-align: middle;"></span>
+            </div>
+            <div id="jfbwqa_send_status_message_modal" style="margin-top: 10px; padding: 10px; display:none;"></div>
+        </div>
+    </div>
+    <?php
+    jfbwqa_write_log("DEBUG: jfbwqa_output_quote_modal_html has rendered.");
 }
 
 ?>
