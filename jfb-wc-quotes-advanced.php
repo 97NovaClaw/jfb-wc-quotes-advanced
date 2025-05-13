@@ -453,6 +453,119 @@ function jfbwqa_add_order_action( $actions ) {
     return $actions;
 }
 add_action( 'woocommerce_order_action_jfbwqa_send_estimate_email', 'jfbwqa_handle_order_action' );
+add_action( 'woocommerce_order_action_jfbwqa_send_prepared_quote', 'jfbwqa_handle_send_prepared_quote_action' ); // Handler now active
+
+function jfbwqa_handle_send_prepared_quote_action( $order ) {
+    if ( ! is_a( $order, 'WC_Order' ) ) {
+        $order_id = absint($order);
+        $order = wc_get_order($order_id);
+        if ( ! $order ) { 
+            jfbwqa_write_log("ERROR: Send Prepared Quote Action - Invalid order ID {$order_id}"); 
+            return; 
+        }
+    }
+    $order_id = $order->get_id();
+    jfbwqa_write_log("Order action 'jfbwqa_send_prepared_quote' triggered for order ID: {$order_id}");
+    
+    $options = jfbwqa_get_options();
+
+    // Quote Email Config from Settings
+    $subject_template = $options['quote_email_subject'];
+    $heading_template = $options['quote_email_heading'];
+    $body_template    = $options['quote_email_default_body'];
+    $reply_to_email   = sanitize_email($options['email_reply_to']); // Use general reply-to
+    $cc_email         = sanitize_email($options['email_cc']);       // Use general CC
+
+    // Get custom message and pricing flag from order meta
+    $quote_custom_message = get_post_meta( $order_id, '_jfbwqa_quote_custom_message', true );
+    $include_pricing_flag = get_post_meta( $order_id, '_jfbwqa_quote_include_pricing', true ) === 'yes'; // Converts to boolean
+
+    jfbwqa_write_log("DEBUG: Send Prepared Quote - Custom Message for order #{$order_id}: " . $quote_custom_message);
+    jfbwqa_write_log("DEBUG: Send Prepared Quote - Include Pricing for order #{$order_id}: " . ($include_pricing_flag ? 'Yes' : 'No'));
+
+    $recipient_email = $order->get_billing_email();
+    if ( ! is_email( $recipient_email ) ) {
+        $error_msg = sprintf(__('Failed to send Prepared Quote Email for Order #%s: Invalid billing email.', 'jfb-wc-quotes-advanced'), $order->get_order_number());
+        jfbwqa_write_log("ERROR: " . str_replace('#'.$order->get_order_number(), $order_id, $error_msg));
+        $order->add_order_note( $error_msg, false, false );
+        return;
+    }
+
+    $base_replacements = [
+        '{order_number}' => $order->get_order_number(), 
+        '{site_title}' => wp_specialchars_decode(get_bloginfo('name'), ENT_QUOTES),
+        '{customer_first_name}' => $order->get_billing_first_name(),
+        '{customer_last_name}' => $order->get_billing_last_name(),
+        '{customer_name}' => $order->get_formatted_billing_full_name(),
+        // Add a placeholder for the custom message from the metabox
+        '{additional_message_from_admin}' => wpautop(wptexturize($quote_custom_message))
+    ];
+
+    $subject = str_replace(array_keys($base_replacements), array_values($base_replacements), $subject_template);
+    $heading = str_replace(array_keys($base_replacements), array_values($base_replacements), $heading_template);
+    
+    // First, replace basic placeholders in the main body template, including the custom message placeholder
+    $email_body_intermediate = str_replace(array_keys($base_replacements), array_values($base_replacements), $body_template);
+    
+    // Then, process all other placeholders including [Order Details Table] with pricing flag
+    $email_body_final = jfbwqa_replace_email_placeholders( $email_body_intermediate, $order, $include_pricing_flag );
+
+    jfbwqa_write_log("DEBUG: Send Prepared Quote - Final Email Body for order #{$order_id}: " . $email_body_final);
+
+    $template_name = 'emails/customer-estimate-request.php'; // We can reuse the main wrapper template
+    $default_plugin_path = jfbwqa_plugin_dir() . 'woocommerce/';
+
+    $mailer = WC()->mailer();
+    ob_start();
+    $template_args = [
+           'order' => $order,
+           'email_heading' => $heading,
+           'email_body_content' => $email_body_final, 
+           'additional_content' => '', // Custom message is now part of email_body_final via placeholder
+           'sent_to_admin' => false,
+           'plain_text' => false,
+           'email' => $mailer
+       ];
+    wc_get_template( $template_name, $template_args, 'jfb-wc-quotes-advanced/', $default_plugin_path );
+    $email_html_content = ob_get_clean();
+
+    if (strpos($email_html_content, '</html>') === false) {
+        $email_html_content = $mailer ? $mailer->wrap_message($heading, $email_html_content) : $email_html_content;
+    }
+
+    $site_domain = wp_parse_url(get_site_url(), PHP_URL_HOST);
+    if (substr($site_domain, 0, 4) === 'www.') {
+        $site_domain = substr($site_domain, 4);
+    }
+    $from_email_override = 'noreply@' . $site_domain;
+    $from_name_override = wp_specialchars_decode(get_bloginfo('name'), ENT_QUOTES);
+
+    $headers = ["Content-Type: text/html; charset=UTF-8"];
+    $headers[] = "From: " . $from_name_override . " <" . $from_email_override . ">";
+    if ( !empty($reply_to_email) && is_email($reply_to_email) ) $headers[] = "Reply-To: <{$reply_to_email}>";
+    if ( !empty($cc_email) && is_email($cc_email) ) $headers[] = "Cc: <{$cc_email}>";
+
+    jfbwqa_write_log("Sending Prepared Quote email to {$recipient_email} for order #{$order_id}.");
+    $sent = wp_mail( $recipient_email, $subject, $email_html_content, $headers );
+
+    if ( $sent ) {
+        $note = __('Prepared Quote email sent to customer.', 'jfb-wc-quotes-advanced');
+        if (!empty($quote_custom_message)) {
+            $note .= ' ' . __('Custom message included.', 'jfb-wc-quotes-advanced');
+        }
+        if ($include_pricing_flag) {
+            $note .= ' ' . __('Pricing was included.', 'jfb-wc-quotes-advanced');
+        }
+        $order->add_order_note( $note, false, false );
+        jfbwqa_write_log("Prepared Quote email SENT successfully for order #{$order_id}.");
+    } else {
+        $error_msg = sprintf(__('Failed sending Prepared Quote email for Order #%s via wp_mail().', 'jfb-wc-quotes-advanced'), $order->get_order_number());
+        $order->add_order_note( $error_msg, false, false );
+        jfbwqa_write_log("ERROR: wp_mail() failed for Prepared Quote email, order #{$order_id}. Check mail server.");
+        global $phpmailer; if ( isset($phpmailer) && !empty($phpmailer->ErrorInfo) ) jfbwqa_write_log("PHPMailer Error: " . $phpmailer->ErrorInfo);
+    }
+}
+
 function jfbwqa_handle_order_action( $order ) {
     // Ensure $order is WC_Order object
     if ( ! is_a( $order, 'WC_Order' ) ) {
@@ -603,7 +716,7 @@ function jfbwqa_handle_order_action( $order ) {
 /* =============================================================================
    8) Placeholder Replacement Function (Reads options, uses mapping JSON)
    ============================================================================= */
-function jfbwqa_replace_email_placeholders( $content, $order ) {
+function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = false ) { // Added $show_prices argument, default false
     // Add this check for null content
     if ( ! is_string($content) ) {
         jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Initial content is not a string or is null. Order ID: " . ($order instanceof WC_Order ? $order->get_id() : 'N/A') . ". Content Value: " . print_r($content, true));
@@ -649,10 +762,20 @@ function jfbwqa_replace_email_placeholders( $content, $order ) {
             'plain_text'            => false,
             'sent_to_admin'         => false,
             'show_purchase_note'    => false, // Adjust as needed
+            // 'show_prices'        => $show_prices, // Pass this to the template if it supports it directly - WC default doesn't, we control via template choice
         );
-        jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Args for email-order-items.php (order #{$order_id_for_log}): Order ID = " . $order->get_id() . ", Item count = " . count($order_items) . ", Plain text = false");
+        jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Args for email-order-items.php (order #{$order_id_for_log}): Order ID = " . $order->get_id() . ", Item count = " . count($order_items) . ", Plain text = false, Show Prices Flag = " . ($show_prices ? 'Yes' : 'No'));
         
-        $order_table_html = wc_get_template_html( 'emails/email-order-items.php', $table_args, '', jfbwqa_plugin_dir() . 'woocommerce/' );
+        $template_path_override = '';
+        if ( ! $show_prices ) {
+            // If NOT showing prices, use our custom template that hides them.
+            $template_path_override = jfbwqa_plugin_dir() . 'woocommerce/';
+            jfbwqa_write_log("DEBUG: Using overridden email-order-items.php (no prices) for order #{$order_id_for_log}.");
+        } else {
+            jfbwqa_write_log("DEBUG: Using default email-order-items.php (with prices) for order #{$order_id_for_log}.");
+        }
+        // If $template_path_override is empty, wc_get_template_html will use its default lookup (theme then WC plugin).
+        $order_table_html = wc_get_template_html( 'emails/email-order-items.php', $table_args, '', $template_path_override );
         
         $buffered_output = ob_get_clean(); // Get any other buffered output
         if (!empty($buffered_output)) {
@@ -1231,23 +1354,31 @@ function jfbwqa_add_prepared_quote_metabox() {
  * Render the Prepared Quote Sender Metabox Content
  */
 function jfbwqa_render_prepared_quote_metabox( $post ) {
-    // Add nonce for security if we add save actions later for settings within this metabox
-    // wp_nonce_field( 'jfbwqa_save_quote_settings_meta', 'jfbwqa_quote_settings_nonce' );
+    // Add nonce for security
+    wp_nonce_field( 'jfbwqa_save_quote_meta', 'jfbwqa_quote_meta_nonce' );
+
+    $custom_message = get_post_meta( $post->ID, '_jfbwqa_quote_custom_message', true );
+    // Default to 'yes' (checked) if not previously saved.
+    $include_pricing = get_post_meta( $post->ID, '_jfbwqa_quote_include_pricing', true );
+    if ( $include_pricing === '' ) { // Check if it was never saved
+        $include_pricing = 'yes'; // Default to checked
+    }
+
 
     echo '<p>' . esc_html__('Configure and send the prepared quote to the customer.', 'jfb-wc-quotes-advanced') . '</p>';
 
-    // Placeholder for Custom Message Textarea
+    // Custom Message Textarea
     echo '<div id="jfbwqa_custom_quote_message_area">';
     echo '<h4>' . esc_html__('Custom Message (Optional)', 'jfb-wc-quotes-advanced') . '</h4>';
-    echo '<textarea id="jfbwqa_custom_quote_message" name="jfbwqa_custom_quote_message" style="width:100%; height: 100px;" placeholder="' . esc_attr__('This message will be added to the quote email...', 'jfb-wc-quotes-advanced') . '"></textarea>';
+    echo '<textarea id="jfbwqa_custom_quote_message" name="jfbwqa_custom_quote_message" style="width:100%; height: 100px;" placeholder="' . esc_attr__('This message will be added to the quote email...', 'jfb-wc-quotes-advanced') . '">' . esc_textarea( $custom_message ) . '</textarea>';
     echo '</div>';
 
-    // Placeholder for "Include Pricing" Checkbox
+    // "Include Pricing" Checkbox
     echo '<div id="jfbwqa_include_pricing_area" style="margin-top: 10px;">';
-    echo '<label><input type="checkbox" id="jfbwqa_include_pricing" name="jfbwqa_include_pricing" value="1" checked="checked" /> ' . esc_html__('Include Pricing in this Quote', 'jfb-wc-quotes-advanced') . '</label>';
+    echo '<label><input type="checkbox" id="jfbwqa_include_pricing" name="jfbwqa_include_pricing" value="yes" ' . checked( $include_pricing, 'yes', false ) . ' /> ' . esc_html__('Include Pricing in this Quote', 'jfb-wc-quotes-advanced') . '</label>';
     echo '</div>';
 
-    // Placeholder for Available Shortcodes/Placeholders Display
+    // Available Shortcodes/Placeholders Display
     echo '<div id="jfbwqa_available_placeholders_info" style="margin-top: 10px; padding: 5px; background-color: #f9f9f9; border: 1px solid #eee;">';
     echo '<strong>' . esc_html__('Available Placeholders:', 'jfb-wc-quotes-advanced') . '</strong><br>';
     echo '<code>{order_number}</code>, <code>{customer_name}</code>, <code>{customer_first_name}</code>, <code>{site_title}</code>, etc.<br>';
@@ -1263,6 +1394,97 @@ function jfbwqa_render_prepared_quote_metabox( $post ) {
     echo '<button type="button" id="jfbwqa_send_quote_button" class="button button-primary">' . esc_html__('Send Prepared Quote Email', 'jfb-wc-quotes-advanced') . '</button>';
     echo '<p class="description">' . esc_html__('Clicking this will save any custom message/settings and trigger the email.', 'jfb-wc-quotes-advanced') . '</p>';
     echo '</div>';
+}
+
+/**
+ * Save Meta Box Data for Sending Prepared Quote
+ */
+add_action( 'save_post_shop_order', 'jfbwqa_save_prepared_quote_meta', 10, 1 );
+function jfbwqa_save_prepared_quote_meta( $post_id ) {
+    // Check nonce
+    if ( ! isset( $_POST['jfbwqa_quote_meta_nonce'] ) || ! wp_verify_nonce( $_POST['jfbwqa_quote_meta_nonce'], 'jfbwqa_save_quote_meta' ) ) {
+        return $post_id;
+    }
+
+    // Check user permissions
+    if ( ! current_user_can( 'edit_post', $post_id ) ) {
+        return $post_id;
+    }
+
+    // Check if it's an autosave
+    if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+        return $post_id;
+    }
+
+    // Sanitize and save Custom Message
+    $custom_message = isset( $_POST['jfbwqa_custom_quote_message'] ) ? wp_kses_post( $_POST['jfbwqa_custom_quote_message'] ) : '';
+    update_post_meta( $post_id, '_jfbwqa_quote_custom_message', $custom_message );
+
+    // Sanitize and save "Include Pricing" - store 'yes' or 'no'
+    $include_pricing = isset( $_POST['jfbwqa_include_pricing'] ) ? 'yes' : 'no';
+    update_post_meta( $post_id, '_jfbwqa_quote_include_pricing', $include_pricing );
+}
+
+/**
+ * AJAX handler for sending the prepared quote email from the meta box button.
+ */
+add_action( 'wp_ajax_jfbwqa_send_quote_via_metabox', 'jfbwqa_ajax_send_quote_handler' );
+function jfbwqa_ajax_send_quote_handler() {
+    check_ajax_referer( 'jfbwqa_send_quote_nonce', 'security' );
+
+    $order_id = isset($_POST['order_id']) ? absint($_POST['order_id']) : 0;
+    if ( !$order_id || !current_user_can('edit_shop_order', $order_id) ) {
+        wp_send_json_error( ['message' => __('Error: Invalid order ID or insufficient permissions.', 'jfb-wc-quotes-advanced')] );
+        return;
+    }
+
+    $order = wc_get_order($order_id);
+    if ( !$order ) {
+        wp_send_json_error( ['message' => __('Error: Could not retrieve order.', 'jfb-wc-quotes-advanced')] );
+        return;
+    }
+
+    // Save/Update meta from the AJAX post data before sending
+    $custom_message = isset( $_POST['custom_message'] ) ? wp_kses_post( stripslashes($_POST['custom_message']) ) : '';
+    update_post_meta( $order_id, '_jfbwqa_quote_custom_message', $custom_message );
+
+    $include_pricing = isset( $_POST['include_pricing'] ) && $_POST['include_pricing'] === 'true' ? 'yes' : 'no';
+    update_post_meta( $order_id, '_jfbwqa_quote_include_pricing', $include_pricing );
+    
+    jfbwqa_write_log("AJAX: Meta updated for order #{$order_id}. Custom Msg: {$custom_message}, Pricing: {$include_pricing}");
+
+    // Execute the order action
+    // Note: WC_Order_Action_Manager->process_action() might be an alternative, but directly calling our handler is simpler here.
+    jfbwqa_handle_send_prepared_quote_action($order);
+
+    // Check for notes added by the handler to infer success/failure if direct return isn't feasible
+    // For simplicity, we assume success if no WP_Error was thrown by the handler (which would terminate execution).
+    // A more robust solution might involve the handler returning a status.
+    wp_send_json_success( ['message' => __('Prepared Quote Email processing triggered.', 'jfb-wc-quotes-advanced')] );
+}
+
+
+/**
+ * Enqueue admin scripts for the order edit page meta box.
+ */
+add_action( 'admin_enqueue_scripts', 'jfbwqa_enqueue_order_edit_scripts' );
+function jfbwqa_enqueue_order_edit_scripts( $hook ) {
+    global $post_type;
+    if ( 'post.php' == $hook && 'shop_order' == $post_type ) {
+        wp_enqueue_script(
+            'jfbwqa-order-metabox-js',
+            plugin_dir_url( __FILE__ ) . 'assets/js/admin-order-metabox.js',
+            ['jquery'],
+            JFBWQA_VERSION, // Use plugin version for cache busting
+            true
+        );
+        wp_localize_script( 'jfbwqa-order-metabox-js', 'jfbwqa_metabox_params', array(
+            'ajax_url' => admin_url( 'admin-ajax.php' ),
+            'send_quote_nonce' => wp_create_nonce( 'jfbwqa_send_quote_nonce' ),
+            'sending_text' => __('Sending...', 'jfb-wc-quotes-advanced'),
+            'error_text' => __('Error. See console or debug log.', 'jfb-wc-quotes-advanced'),
+        ));
+    }
 }
 
 ?>
