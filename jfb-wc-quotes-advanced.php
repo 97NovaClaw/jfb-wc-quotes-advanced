@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI.
- * Version:     1.16
+ * Version:     1.17
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '1.15' );
+define( 'JFBWQA_VERSION', '1.17' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_SETTINGS_SLUG', 'jfbwqa-settings' ); // Menu slug for settings page
 
@@ -632,6 +632,21 @@ function jfbwqa_replace_email_placeholders( $content, $order ) {
         );
         jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Args for email-order-items.php (order #{$order_id_for_log}): Order ID = " . $order->get_id() . ", Item count = " . count($order_items) . ", Plain text = false");
         
+        // *** TEMP DEBUG: Check first product image HTML ***
+        if (!empty($order_items)) {
+            $first_item = reset($order_items); // Get the first item
+            if ($first_item instanceof WC_Order_Item_Product) {
+                $_product = $first_item->get_product();
+                if ($_product && $_product->exists()) {
+                    $image_html = $_product->get_image(array(32,32));
+                    jfbwqa_write_log("DEBUG TEMP: First product get_image() for order #{$order_id_for_log}, Product ID {$_product->get_id()}: " . $image_html);
+                } else {
+                    jfbwqa_write_log("DEBUG TEMP: First product not found or does not exist for order #{$order_id_for_log}.");
+                }
+            }
+        }
+        // *** END TEMP DEBUG ***
+
         $order_table_html = wc_get_template_html( 'emails/email-order-items.php', $table_args );
         
         $buffered_output = ob_get_clean(); // Get any other buffered output
