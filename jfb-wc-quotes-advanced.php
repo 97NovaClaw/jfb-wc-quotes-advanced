@@ -48,7 +48,11 @@ function jfbwqa_get_options() {
         'email_heading'      => 'Estimate Request Details',
         'email_reply_to'     => get_option('admin_email'),
         'email_cc'           => '',
-        'email_default_body' => "Thank you for your estimate request. We have received the following details:\n\n[Order Details Table]\n\nWe will review your request and get back to you shortly.\n\nRegards,\n{site_title}"
+        'email_default_body' => "Thank you for your estimate request. We have received the following details:\n\n[Order Details Table]\n\nWe will review your request and get back to you shortly.\n\nRegards,\n{site_title}",
+        // Defaults for the new Quote Email
+        'quote_email_subject'      => 'Your Quote #{order_number} is Ready',
+        'quote_email_heading'      => 'Your Prepared Quote',
+        'quote_email_default_body' => "Hello {customer_first_name},\n\nYour quote is ready! Please find the details below:\n\n[Order Details Table]\n\n{additional_message_from_admin}\n\nIf you have any questions, please let us know.\n\nRegards,\n{site_title}"
     ];
     $options = get_option( JFBWQA_OPTION_NAME, [] );
 
@@ -59,6 +63,10 @@ function jfbwqa_get_options() {
     if ( empty( $options['email_default_body'] ) ) {
          $options['email_default_body'] = $defaults['email_default_body'];
     }
+    // Ensure default quote body is present if empty after save
+    if ( empty( $options['quote_email_default_body'] ) ) {
+        $options['quote_email_default_body'] = $defaults['quote_email_default_body'];
+   }
 
     // *** DEBUG LOGGING START ***
     jfbwqa_write_log("DEBUG: jfbwqa_get_options() - Raw email_default_body from DB: " . ($options['email_default_body'] ?? 'NOT SET'));
@@ -768,6 +776,17 @@ function jfbwqa_settings_init() {
     add_settings_field( 'email_cc', __('CC Email', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'email_cc', 'type' => 'email'] );
     add_settings_field( 'email_default_body', __('Email Body Template', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_wp_editor', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'email_default_body'] ); // Desc rendered in section callback
 
+    // Quote Email Settings Section
+    add_settings_section(
+        'jfbwqa_section_quote_email',
+        __('Prepared Quote Email Settings', 'jfb-wc-quotes-advanced'),
+        'jfbwqa_render_section_quote_email_desc',
+        JFBWQA_SETTINGS_SLUG
+    );
+    add_settings_field( 'quote_email_subject', __('Quote Email Subject', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_email_subject', 'type' => 'text', 'placeholder' => 'Your Quote #{order_number} is Ready'] );
+    add_settings_field( 'quote_email_heading', __('Quote Email Heading', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_email_heading', 'type' => 'text', 'placeholder' => 'Your Prepared Quote'] );
+    add_settings_field( 'quote_email_default_body', __('Quote Email Default Body', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_wp_editor', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_email_default_body'] );
+
     // Email Deliverability Section
     add_settings_section(
         'jfbwqa_section_deliverability',
@@ -784,8 +803,12 @@ function jfbwqa_settings_init() {
     );
 }
 function jfbwqa_render_section_email_desc() {
-     echo '<p>' . esc_html__('Customize the email sent via the order action.', 'jfb-wc-quotes-advanced') . '</p>';
+     echo '<p>' . esc_html__('Customize the email sent via the order action for the initial estimate request confirmation.', 'jfb-wc-quotes-advanced') . '</p>';
      // Add placeholders list here if desired (as in v1.14 render_section_email)
+}
+function jfbwqa_render_section_quote_email_desc() {
+    echo '<p>' . esc_html__('Customize the default content for the email sent when a quote is prepared and sent to the customer (typically from the order edit screen).', 'jfb-wc-quotes-advanced') . '</p>';
+    echo '<p>' . esc_html__('Placeholders like {order_number}, {[your_jetengine_field]}, and [Order Details Table] can be used. The actual message sent can be further customized on the order edit page.', 'jfb-wc-quotes-advanced') . '</p>';
 }
 function jfbwqa_render_section_deliverability_desc() {
     echo '<p>' . esc_html__('To significantly improve the chances of your estimate emails reaching the inbox and not being marked as spam, it is highly recommended to configure certain DNS records for your domain (the domain emails are sent from, e.g., luxeandpetals.com). This plugin now sends emails from "noreply@yourdomain.com".', 'jfb-wc-quotes-advanced') . '</p>';
@@ -857,6 +880,11 @@ function jfbwqa_sanitize_options( $input ) {
     $output['email_reply_to']  = sanitize_email($input['email_reply_to'] ?? '');
     $output['email_cc']        = sanitize_email($input['email_cc'] ?? '');
     if (isset($input['email_default_body'])) $output['email_default_body'] = wp_kses_post(wp_unslash($input['email_default_body']));
+
+    // Sanitize new quote email fields
+    $output['quote_email_subject'] = sanitize_text_field($input['quote_email_subject'] ?? '');
+    $output['quote_email_heading'] = sanitize_text_field($input['quote_email_heading'] ?? '');
+    if (isset($input['quote_email_default_body'])) $output['quote_email_default_body'] = wp_kses_post(wp_unslash($input['quote_email_default_body']));
 
     jfbwqa_write_log("General plugin settings sanitized.");
     // NOTE: Mapping is saved separately, not via this callback.
