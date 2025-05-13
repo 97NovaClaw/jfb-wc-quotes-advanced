@@ -632,7 +632,7 @@ function jfbwqa_replace_email_placeholders( $content, $order ) {
         );
         jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Args for email-order-items.php (order #{$order_id_for_log}): Order ID = " . $order->get_id() . ", Item count = " . count($order_items) . ", Plain text = false");
         
-        $order_table_html = wc_get_template_html( 'emails/email-order-items.php', $table_args );
+        $order_table_html = wc_get_template_html( 'emails/email-order-items.php', $table_args, '', jfbwqa_plugin_dir() . 'woocommerce/' );
         
         $buffered_output = ob_get_clean(); // Get any other buffered output
         if (!empty($buffered_output)) {
