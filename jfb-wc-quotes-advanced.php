@@ -632,21 +632,6 @@ function jfbwqa_replace_email_placeholders( $content, $order ) {
         );
         jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Args for email-order-items.php (order #{$order_id_for_log}): Order ID = " . $order->get_id() . ", Item count = " . count($order_items) . ", Plain text = false");
         
-        // *** TEMP DEBUG: Check first product image HTML ***
-        if (!empty($order_items)) {
-            $first_item = reset($order_items); // Get the first item
-            if ($first_item instanceof WC_Order_Item_Product) {
-                $_product = $first_item->get_product();
-                if ($_product && $_product->exists()) {
-                    $image_html = $_product->get_image(array(32,32));
-                    jfbwqa_write_log("DEBUG TEMP: First product get_image() for order #{$order_id_for_log}, Product ID {$_product->get_id()}: " . $image_html);
-                } else {
-                    jfbwqa_write_log("DEBUG TEMP: First product not found or does not exist for order #{$order_id_for_log}.");
-                }
-            }
-        }
-        // *** END TEMP DEBUG ***
-
         $order_table_html = wc_get_template_html( 'emails/email-order-items.php', $table_args );
         
         $buffered_output = ob_get_clean(); // Get any other buffered output
