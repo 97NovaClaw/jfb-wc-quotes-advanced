@@ -1338,7 +1338,7 @@ function jfbwqa_save_custom_email_message_meta( $post_id ) {
 /**
  * Add Meta Box for Sending Prepared Quote
  */
-add_action( 'add_meta_boxes', 'jfbwqa_add_prepared_quote_metabox' );
+// add_action( 'add_meta_boxes', 'jfbwqa_add_prepared_quote_metabox' ); // Temporarily disabled
 function jfbwqa_add_prepared_quote_metabox() {
     add_meta_box(
         'jfbwqa_prepared_quote_sender',                 // ID
