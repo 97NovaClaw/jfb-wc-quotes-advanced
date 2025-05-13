@@ -449,6 +449,7 @@ function jfbwqa_handle_form_submission( $result, $request, $action_handler ) {
 add_filter( 'woocommerce_order_actions', 'jfbwqa_add_order_action' );
 function jfbwqa_add_order_action( $actions ) {
     $actions['jfbwqa_send_estimate_email'] = __( 'Send Estimate Request Email', 'jfb-wc-quotes-advanced' );
+    $actions['jfbwqa_send_prepared_quote'] = __( 'Send Prepared Quote Email', 'jfb-wc-quotes-advanced' ); // New Action
     return $actions;
 }
 add_action( 'woocommerce_order_action_jfbwqa_send_estimate_email', 'jfbwqa_handle_order_action' );
@@ -1209,6 +1210,59 @@ function jfbwqa_save_custom_email_message_meta( $post_id ) {
     // if (isset($_POST['jfbwqa_clear_message_flag']) && $_POST['jfbwqa_clear_message_flag'] == '1') {
     //     update_post_meta( $post_id, '_jfbwqa_custom_email_message', '');
     // }
+}
+
+/**
+ * Add Meta Box for Sending Prepared Quote
+ */
+add_action( 'add_meta_boxes', 'jfbwqa_add_prepared_quote_metabox' );
+function jfbwqa_add_prepared_quote_metabox() {
+    add_meta_box(
+        'jfbwqa_prepared_quote_sender',                 // ID
+        __('Send Prepared Quote', 'jfb-wc-quotes-advanced'), // Title
+        'jfbwqa_render_prepared_quote_metabox',      // Callback function
+        'shop_order',                                  // Post type
+        'side',                                        // Context (normal, side, advanced)
+        'high'                                         // Priority
+    );
+}
+
+/**
+ * Render the Prepared Quote Sender Metabox Content
+ */
+function jfbwqa_render_prepared_quote_metabox( $post ) {
+    // Add nonce for security if we add save actions later for settings within this metabox
+    // wp_nonce_field( 'jfbwqa_save_quote_settings_meta', 'jfbwqa_quote_settings_nonce' );
+
+    echo '<p>' . esc_html__('Configure and send the prepared quote to the customer.', 'jfb-wc-quotes-advanced') . '</p>';
+
+    // Placeholder for Custom Message Textarea
+    echo '<div id="jfbwqa_custom_quote_message_area">';
+    echo '<h4>' . esc_html__('Custom Message (Optional)', 'jfb-wc-quotes-advanced') . '</h4>';
+    echo '<textarea id="jfbwqa_custom_quote_message" name="jfbwqa_custom_quote_message" style="width:100%; height: 100px;" placeholder="' . esc_attr__('This message will be added to the quote email...', 'jfb-wc-quotes-advanced') . '"></textarea>';
+    echo '</div>';
+
+    // Placeholder for "Include Pricing" Checkbox
+    echo '<div id="jfbwqa_include_pricing_area" style="margin-top: 10px;">';
+    echo '<label><input type="checkbox" id="jfbwqa_include_pricing" name="jfbwqa_include_pricing" value="1" checked="checked" /> ' . esc_html__('Include Pricing in this Quote', 'jfb-wc-quotes-advanced') . '</label>';
+    echo '</div>';
+
+    // Placeholder for Available Shortcodes/Placeholders Display
+    echo '<div id="jfbwqa_available_placeholders_info" style="margin-top: 10px; padding: 5px; background-color: #f9f9f9; border: 1px solid #eee;">';
+    echo '<strong>' . esc_html__('Available Placeholders:', 'jfb-wc-quotes-advanced') . '</strong><br>';
+    echo '<code>{order_number}</code>, <code>{customer_name}</code>, <code>{customer_first_name}</code>, <code>{site_title}</code>, etc.<br>';
+    echo esc_html__('JetEngine fields: ', 'jfb-wc-quotes-advanced') . '<code>{[your_jet_engine_field_key]}</code><br>';
+    echo '<code>[Order Details Table]</code> - inserts the items table.<br>';
+    echo '<code>{additional_message_from_admin}</code> - for this custom message.'; // This placeholder would be replaced by the content of the textarea above.
+    echo '</div>';
+
+    // Placeholder for Send Button (will trigger the order action)
+    echo '<div style="margin-top: 15px;">';
+    // This button will eventually trigger the 'jfbwqa_send_prepared_quote' order action.
+    // For now, it doesn't do anything functional.
+    echo '<button type="button" id="jfbwqa_send_quote_button" class="button button-primary">' . esc_html__('Send Prepared Quote Email', 'jfb-wc-quotes-advanced') . '</button>';
+    echo '<p class="description">' . esc_html__('Clicking this will save any custom message/settings and trigger the email.', 'jfb-wc-quotes-advanced') . '</p>';
+    echo '</div>';
 }
 
 ?>
