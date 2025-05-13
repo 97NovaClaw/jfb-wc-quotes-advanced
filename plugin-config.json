@@ -1,0 +1,13 @@
+{
+    "consumer_key": "ck_50bfca8b3703dc7eb35c630c4f82b0a0f178f7c5",
+    "consumer_secret": "cs_e1132e23194581bc818f0a8f89bf6fca7d1c4872",
+    "hook_name": "my_jfb_wc_estimate_form",
+    "shortcode_name": "my_cart_json",
+    "jetengine_keys": "order_request_date\r\ndelivery_or_pickup",
+    "enable_debug": true,
+    "email_subject": "Your Estimate Request #{order_number}",
+    "email_heading": "Estimate Request Details",
+    "email_reply_to": "l.gallucci97@gmail.com",
+    "email_cc": "",
+    "email_default_body": "Thank you for your request...\r\n\r\n&nbsp;\r\n\r\n<span style=\"color: #50575e;font-family: Consolas, Monaco, monospace\"><span style=\"font-size: 13px\">{[</span></span><span style=\"color: #50575e;font-family: Consolas, Monaco, monospace;font-size: 13px\">email]} and order request date {[</span><span style=\"color: #50575e;font-family: Consolas, Monaco, monospace\"><span style=\"font-size: 13px\">order_request_date]}</span></span><span style=\"color: #50575e;font-family: Consolas, Monaco, monospace;font-size: 13px\"> and [{</span><span style=\"color: #50575e;font-family: Consolas, Monaco, monospace\"><span style=\"font-size: 13px\">delivery_or_pickup<strong>]}</strong></span></span>"
+}

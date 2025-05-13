@@ -1,0 +1,25 @@
+{
+    "phone": [
+        "billing.phone"
+    ],
+    "name": [
+        "billing.first_name"
+    ],
+    "email": [
+        "billing.email"
+    ],
+    "request_date": [
+        "*JE_meta*.order_request_date"
+    ],
+    "address": [
+        "billing.address_1",
+        "shipping.address_1",
+        "*JE_meta*.delivery_or_pickup"
+    ],
+    "message": [
+        "customer_note"
+    ],
+    "quote_items": [
+        "*Cart items list*"
+    ]
+}
