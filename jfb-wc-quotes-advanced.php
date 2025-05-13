@@ -1403,7 +1403,8 @@ function jfbwqa_render_quote_controls_section( $order ) {
     echo $html_output; // Echo the actual content to the page
     jfbwqa_write_log("DEBUG: jfbwqa_render_quote_controls_section outputting HTML (approx length " . strlen($html_output) . "). Starts with: " . substr(preg_replace('/\s+/', ' ', $html_output), 0, 200));
 }
-add_action( 'woocommerce_admin_order_data_after_order_details', 'jfbwqa_render_quote_controls_section', 20, 1 );
+// add_action( 'woocommerce_admin_order_data_after_order_details', 'jfbwqa_render_quote_controls_section', 20, 1 ); // Previous Hook
+add_action( 'woocommerce_admin_order_totals_after_total', 'jfbwqa_render_quote_controls_section', 10, 1 ); // New Hook
 
 /**
  * Save Meta Box Data for Sending Prepared Quote
