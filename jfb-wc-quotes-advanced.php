@@ -60,6 +60,10 @@ function jfbwqa_get_options() {
          $options['email_default_body'] = $defaults['email_default_body'];
     }
 
+    // *** DEBUG LOGGING START ***
+    jfbwqa_write_log("DEBUG: jfbwqa_get_options() - Raw email_default_body from DB: " . ($options['email_default_body'] ?? 'NOT SET'));
+    // *** DEBUG LOGGING END ***
+
     return wp_parse_args( $options, $defaults );
 }
 
@@ -421,6 +425,10 @@ function jfbwqa_handle_order_action( $order ) {
     $reply_to_email = sanitize_email($options['email_reply_to']); $cc_email = sanitize_email($options['email_cc']);
     $body_template = $options['email_default_body'];
 
+    // *** DEBUG LOGGING START ***
+    jfbwqa_write_log("DEBUG: jfbwqa_handle_order_action() - \$body_template (from settings) BEFORE placeholder replacement for order #{$order_id}: " . $body_template);
+    // *** DEBUG LOGGING END ***
+
     // *** NEW: Get the custom message from order meta ***
     $custom_admin_message = get_post_meta( $order_id, '_jfbwqa_custom_email_message', true );
     // *** END NEW ***
@@ -442,6 +450,10 @@ function jfbwqa_handle_order_action( $order ) {
 
     // Process body placeholders (Make sure to remove the [Order Details Table] replacement if using the template action)
     $email_body = jfbwqa_replace_email_placeholders( $body_template, $order );
+    // *** DEBUG LOGGING START ***
+    jfbwqa_write_log("DEBUG: jfbwqa_handle_order_action() - \$email_body AFTER placeholder replacement for order #{$order_id}: " . $email_body);
+    // *** DEBUG LOGGING END ***
+
 
     // Get Email HTML using WC Template System
     $template_name = 'emails/customer-estimate-request.php';
@@ -456,7 +468,7 @@ function jfbwqa_handle_order_action( $order ) {
     $mailer = WC()->mailer();
     ob_start();
     // *** MODIFIED: Pass the custom message and processed default body to the template ***
-    wc_get_template( $template_name, [
+    $template_args = [
            'order' => $order,
            'email_heading' => $heading,
            'email_body_content' => $email_body, // Default body with placeholders replaced
@@ -464,10 +476,21 @@ function jfbwqa_handle_order_action( $order ) {
            'sent_to_admin' => false,
            'plain_text' => false,
            'email' => $mailer
-       ], 'jfb-wc-quotes-advanced/', $template_path_default );
+       ];
+    // *** DEBUG LOGGING START ***
+    jfbwqa_write_log("DEBUG: jfbwqa_handle_order_action() - Args passed to wc_get_template for order #{$order_id}: " . print_r($template_args, true));
+    // *** DEBUG LOGGING END ***
+    wc_get_template( $template_name, $template_args, 'jfb-wc-quotes-advanced/', $template_path_default );
     // *** END MODIFIED ***
     $email_html_content = ob_get_clean();
+    // *** DEBUG LOGGING START ***
+    jfbwqa_write_log("DEBUG: jfbwqa_handle_order_action() - \$email_html_content (raw from template) for order #{$order_id}: " . substr($email_html_content, 0, 1000) . (strlen($email_html_content) > 1000 ? "..." : ""));
+    // *** DEBUG LOGGING END ***
     $email_html_content = $mailer ? $mailer->wrap_message($heading, $email_html_content) : $email_html_content; // Wrap if mailer exists
+    // *** DEBUG LOGGING START ***
+    jfbwqa_write_log("DEBUG: jfbwqa_handle_order_action() - \$email_html_content (wrapped) for order #{$order_id}: " . substr($email_html_content, 0, 1000) . (strlen($email_html_content) > 1000 ? "..." : ""));
+    // *** DEBUG LOGGING END ***
+
 
     // Prepare Headers
     $headers = ["Content-Type: text/html; charset=UTF-8"];
@@ -508,6 +531,9 @@ function jfbwqa_handle_order_action( $order ) {
    ============================================================================= */
 function jfbwqa_replace_email_placeholders( $content, $order ) {
     if ( ! is_a( $order, 'WC_Order' ) ) { jfbwqa_write_log("Placeholder Error: Invalid WC_Order object."); return $content; }
+    $order_id_for_log = $order->get_id(); // For logging
+    jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - START for order #{$order_id_for_log}. Initial content: " . $content);
+
     $options = jfbwqa_get_options(); $mapping = jfbwqa_read_mapping();
 
     // Basic Placeholders
@@ -520,12 +546,16 @@ function jfbwqa_replace_email_placeholders( $content, $order ) {
     $content = str_replace('{billing_phone}', $order->get_billing_phone(), $content);
     $content = str_replace('{site_title}', get_bloginfo('name'), $content);
     $content = str_replace('{site_url}', site_url(), $content);
+    jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Content after basic replacements for order #{$order_id_for_log}: " . $content);
+
 
     // Special Placeholder: Order Items Table
-    if ( strpos( $content, '[Order Details Table]' ) !== false ) {
+    $order_details_table_placeholder = '[Order Details Table]';
+    if ( strpos( $content, $order_details_table_placeholder ) !== false ) {
+        jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Found '{$order_details_table_placeholder}' for order #{$order_id_for_log}. Attempting to generate table.");
         ob_start();
         // Using wc_get_template_html to render the standard items table part
-        echo wc_get_template_html( 'emails/email-order-items.php', array(
+        $table_args = array(
             'order'                 => $order,
             'items'                 => $order->get_items(),
             'show_sku'              => false, // Adjust as needed
@@ -534,27 +564,54 @@ function jfbwqa_replace_email_placeholders( $content, $order ) {
             'plain_text'            => false,
             'sent_to_admin'         => false,
             'show_purchase_note'    => false, // Adjust as needed
-        ) );
-        $order_table_html = ob_get_clean();
-        $content = str_replace('[Order Details Table]', $order_table_html, $content);
+        );
+        jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Args for email-order-items.php for order #{$order_id_for_log}: " . print_r($table_args, true));
+        $order_table_html = wc_get_template_html( 'emails/email-order-items.php', $table_args );
+        
+        $buffered_output = ob_get_clean(); // Get any other buffered output
+        if (!empty($buffered_output)) {
+            jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Unexpected buffered output during table generation for order #{$order_id_for_log}: " . $buffered_output);
+        }
+
+        jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - HTML for order table (from wc_get_template_html) for order #{$order_id_for_log}: " . substr($order_table_html, 0, 500) . (strlen($order_table_html) > 500 ? "..." : ""));
+        
+        if (empty($order_table_html)) {
+            jfbwqa_write_log("WARNING: jfbwqa_replace_email_placeholders() - wc_get_template_html for 'emails/email-order-items.php' returned EMPTY for order #{$order_id_for_log}. Check if the template exists and is readable, and if the order has items.");
+        }
+        
+        $content_before_table_replace = $content;
+        $content = str_replace($order_details_table_placeholder, $order_table_html, $content);
+        if ($content === $content_before_table_replace && !empty($order_table_html)) {
+             jfbwqa_write_log("WARNING: jfbwqa_replace_email_placeholders() - str_replace for '{$order_details_table_placeholder}' did NOT change content, but table HTML was generated for order #{$order_id_for_log}. Placeholder typo or issue?");
+        } elseif ($content !== $content_before_table_replace) {
+             jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Successfully replaced '{$order_details_table_placeholder}' for order #{$order_id_for_log}.");
+        }
+
+
+    } else {
+        jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Did NOT find '{$order_details_table_placeholder}' in content for order #{$order_id_for_log}. Content: " . $content);
     }
 
     // Advanced Placeholders: {[field_name]}
     if ( preg_match_all('/{\[(.*?)]}/', $content, $matches) ) {
+        jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Found advanced placeholders for order #{$order_id_for_log}: " . print_r($matches[1], true));
         $placeholders = array_unique($matches[1]);
         $je_meta_keys = !empty($options['jetengine_keys']) ? preg_split('/\r\n|\r|\n/', trim($options['jetengine_keys'])) : [];
         $je_meta_keys = array_map('trim', $je_meta_keys);
 
         foreach ( $placeholders as $placeholder_key ) {
             $value = ''; $found = false;
+            jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Processing advanced placeholder '{[{$placeholder_key}]}' for order #{$order_id_for_log}.");
             // Lookup logic: JE Meta -> Mapped Fields -> Direct Order Methods -> Generic Meta (same as v1.14)
              // Priority 1: JE meta key from settings
             if ( in_array( $placeholder_key, $je_meta_keys ) ) {
                 $meta_value = $order->get_meta( $placeholder_key, true );
                 if ( ! empty( $meta_value ) ) { $value = is_array($meta_value) || is_object($meta_value) ? wp_json_encode($meta_value) : $meta_value; $found = true; }
+                jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Placeholder '{[{$placeholder_key}]}' (JE Meta Check): Found = " . ($found ? 'Yes' : 'No') . ", Value = " . $value);
             }
             // Priority 2: JFB Field ID mapped to WC field/meta
             if ( ! $found && isset( $mapping[$placeholder_key] ) ) {
+                 jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Placeholder '{[{$placeholder_key}]}' (Mapping Check): Found in mapping. Targets: " . print_r($mapping[$placeholder_key], true));
                  foreach ((array) $mapping[$placeholder_key] as $mapped_wc_field) {
                      if ( empty($mapped_wc_field) || $mapped_wc_field === '*Cart items list*' ) continue;
                      if ( strpos($mapped_wc_field, '*JE_meta*.') === 0 ) {
@@ -571,19 +628,22 @@ function jfbwqa_replace_email_placeholders( $content, $order ) {
                          } elseif ( count($parts) === 1 && $section === 'customer_note' ) { $value = $order->get_customer_note(); $found = true; break; }
                      }
                  }
+                 jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Placeholder '{[{$placeholder_key}]}' (Mapping Result): Found = " . ($found ? 'Yes' : 'No') . ", Value = " . $value);
             }
             // Priority 3: Direct method/property or generic meta
             if ( ! $found ) {
                 $direct_method = 'get_' . $placeholder_key;
                 if ( method_exists( $order, $direct_method ) ) { $value = $order->$direct_method(); $found = true; }
                 elseif ( $order->get_meta( $placeholder_key ) ) { $value = $order->get_meta( $placeholder_key, true ); $found = true; }
+                jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Placeholder '{[{$placeholder_key}]}' (Direct/Generic Meta Check): Found = " . ($found ? 'Yes' : 'No') . ", Value = " . $value);
             }
             // Replace placeholder
             $replacement_value = $found ? wp_kses_post($value) : ''; // Sanitize output
             $content = str_replace('{[' . $placeholder_key . ']}', $replacement_value, $content);
-            if (!$found) jfbwqa_write_log("Placeholder Warning: Could not find value for '{[{$placeholder_key}]}' in email content.");
+            if (!$found) jfbwqa_write_log("Placeholder Warning: Could not find value for '{[{$placeholder_key}]}' in email content for order #{$order_id_for_log}.");
         }
     }
+    jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - END for order #{$order_id_for_log}. Final content: " . $content);
     return $content;
 }
 
