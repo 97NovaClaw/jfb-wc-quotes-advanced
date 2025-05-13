@@ -1340,59 +1340,70 @@ function jfbwqa_save_custom_email_message_meta( $post_id ) {
  */
 // add_action( 'add_meta_boxes', 'jfbwqa_add_prepared_quote_metabox' ); // Temporarily disabled
 function jfbwqa_add_prepared_quote_metabox() {
-    add_meta_box(
-        'jfbwqa_prepared_quote_sender',                 // ID
-        __('Send Prepared Quote', 'jfb-wc-quotes-advanced'), // Title
-        'jfbwqa_render_prepared_quote_metabox',      // Callback function
-        'shop_order',                                  // Post type
-        'side',                                        // Context (normal, side, advanced)
-        'high'                                         // Priority
-    );
+    // This function is currently not used due to the action being disabled.
+    // The rendering logic will be moved to jfbwqa_render_quote_controls_section
 }
 
-/**
- * Render the Prepared Quote Sender Metabox Content
- */
-function jfbwqa_render_prepared_quote_metabox( $post ) {
-    // Add nonce for security
-    // wp_nonce_field( 'jfbwqa_save_quote_meta', 'jfbwqa_quote_meta_nonce' );
+// Function to render the new controls area (replaces the old metabox render content)
+function jfbwqa_render_quote_controls_section( $order ) {
+    if ( ! $order instanceof WC_Order ) {
+        // If $order is just an ID, get the order object
+        $order = wc_get_order( $order );
+        if ( ! $order ) {
+            jfbwqa_write_log('ERROR: jfbwqa_render_quote_controls_section - Could not get order object.');
+            echo '<p>Error: Could not load order data.</p>';
+            return;
+        }
+    }
+    $order_id = $order->get_id();
+    jfbwqa_write_log("DEBUG: jfbwqa_render_quote_controls_section called for order ID: {$order_id}");
 
-    // $custom_message = get_post_meta( $post->ID, '_jfbwqa_quote_custom_message', true );
-    // $include_pricing = get_post_meta( $post->ID, '_jfbwqa_quote_include_pricing', true );
-    // if ( $include_pricing === '' ) { 
-    //     $include_pricing = 'yes'; 
-    // }
+    // Nonce for saving these fields separately if needed, or for AJAX security
+    wp_nonce_field( 'jfbwqa_save_quote_meta', 'jfbwqa_quote_meta_nonce' );
 
-    echo '<div id="jfbwqa-test-metabox" style="padding:10px; border:2px solid red; background-color: yellow;">TEST METABOX VISIBLE?</div>';
+    $custom_message = get_post_meta( $order_id, '_jfbwqa_quote_custom_message', true );
+    $include_pricing_value = get_post_meta( $order_id, '_jfbwqa_quote_include_pricing', true );
+    // Default to 'yes' (checked) if not previously saved or if explicitly set to an empty string by previous logic
+    $include_pricing = ( $include_pricing_value === '' || $include_pricing_value === 'yes' ) ? 'yes' : 'no';
 
-    // echo '<p>' . esc_html__('Configure and send the prepared quote to the customer.', 'jfb-wc-quotes-advanced') . '</p>';
+    ob_start(); // Start output buffering to capture HTML for logging
+    ?>
+    <div class="postbox" id="jfbwqa_quote_controls_section_box">
+        <h2 class="hndle ui-sortable-handle"><span><?php esc_html_e('Prepare & Send Quote Email', 'jfb-wc-quotes-advanced'); ?></span></h2>
+        <div class="inside">
+            <p><?php esc_html_e('Configure and send the prepared quote to the customer.', 'jfb-wc-quotes-advanced'); ?></p>
 
-    // // Custom Message Textarea
-    // echo '<div id="jfbwqa_custom_quote_message_area">';
-    // echo '<h4>' . esc_html__('Custom Message (Optional)', 'jfb-wc-quotes-advanced') . '</h4>';
-    // echo '<textarea id="jfbwqa_custom_quote_message" name="jfbwqa_custom_quote_message" style="width:100%; height: 100px;" placeholder="' . esc_attr__('This message will be added to the quote email...', 'jfb-wc-quotes-advanced') . '">' . esc_textarea( $custom_message ) . '</textarea>';
-    // echo '</div>';
+            <div id="jfbwqa_custom_quote_message_area" style="margin-bottom:15px;">
+                <h4><?php esc_html_e('Custom Message (Optional)', 'jfb-wc-quotes-advanced'); ?></h4>
+                <textarea id="jfbwqa_custom_quote_message" name="jfbwqa_custom_quote_message" style="width:100%; height: 100px;" placeholder="<?php esc_attr_e('This message will be added to the quote email...', 'jfb-wc-quotes-advanced'); ?>"><?php echo esc_textarea( $custom_message ); ?></textarea>
+            </div>
 
-    // // "Include Pricing" Checkbox
-    // echo '<div id="jfbwqa_include_pricing_area" style="margin-top: 10px;">';
-    // echo '<label><input type="checkbox" id="jfbwqa_include_pricing" name="jfbwqa_include_pricing" value="yes" ' . checked( $include_pricing, 'yes', false ) . ' /> ' . esc_html__('Include Pricing in this Quote', 'jfb-wc-quotes-advanced') . '</label>';
-    // echo '</div>';
+            <div id="jfbwqa_include_pricing_area" style="margin-bottom:15px;">
+                <label><input type="checkbox" id="jfbwqa_include_pricing" name="jfbwqa_include_pricing" value="yes" <?php checked( $include_pricing, 'yes' ); ?> /> <?php esc_html_e('Include Pricing in this Quote', 'jfb-wc-quotes-advanced'); ?></label>
+            </div>
 
-    // // Available Shortcodes/Placeholders Display
-    // echo '<div id="jfbwqa_available_placeholders_info" style="margin-top: 10px; padding: 5px; background-color: #f9f9f9; border: 1px solid #eee;">';
-    // echo '<strong>' . esc_html__('Available Placeholders:', 'jfb-wc-quotes-advanced') . '</strong><br>';
-    // echo '<code>{order_number}</code>, <code>{customer_name}</code>, <code>{customer_first_name}</code>, <code>{site_title}</code>, etc.<br>';
-    // echo esc_html__('JetEngine fields: ', 'jfb-wc-quotes-advanced') . '<code>{[your_jet_engine_field_key]}</code><br>';
-    // echo '<code>[Order Details Table]</code> - inserts the items table.<br>';
-    // echo '<code>{additional_message_from_admin}</code> - for this custom message.';
-    // echo '</div>';
+            <div id="jfbwqa_available_placeholders_info" style="margin-bottom:15px; padding: 10px; background-color: #f8f8f8; border: 1px solid #e5e5e5;">
+                <strong><?php esc_html_e('Available Placeholders:', 'jfb-wc-quotes-advanced'); ?></strong><br>
+                <code>{order_number}</code>, <code>{customer_name}</code>, <code>{customer_first_name}</code>, <code>{site_title}</code>, etc.<br>
+                <?php esc_html_e('JetEngine fields: ', 'jfb-wc-quotes-advanced'); ?><code>{[your_jet_engine_field_key]}</code><br>
+                <code>[Order Details Table]</code> - inserts the items table.<br>
+                <code>{additional_message_from_admin}</code> - used for this custom message.
+            </div>
 
-    // // Placeholder for Send Button (will trigger the order action)
-    // echo '<div style="margin-top: 15px;">';
-    // echo '<button type="button" id="jfbwqa_send_quote_button" class="button button-primary">' . esc_html__('Send Prepared Quote Email', 'jfb-wc-quotes-advanced') . '</button>';
-    // echo '<p class="description">' . esc_html__('Clicking this will save any custom message/settings and trigger the email.', 'jfb-wc-quotes-advanced') . '</p>';
-    // echo '</div>';
+            <div style="margin-top: 15px;">
+                <button type="button" id="jfbwqa_send_quote_button" class="button button-primary"><?php esc_html_e('Send Prepared Quote Email', 'jfb-wc-quotes-advanced'); ?></button>
+                <span id="jfbwqa_spinner" class="spinner" style="float:none; vertical-align: middle;"></span>
+                <p class="description"><?php esc_html_e('Clicking this will save the message/settings above and trigger the email.', 'jfb-wc-quotes-advanced'); ?></p>
+            </div>
+             <div id="jfbwqa_send_status_message" style="margin-top: 10px; padding: 10px; display:none;"></div>
+        </div>
+    </div>
+    <?php
+    $html_output = ob_get_clean();
+    echo $html_output; // Echo the actual content to the page
+    jfbwqa_write_log("DEBUG: jfbwqa_render_quote_controls_section outputting HTML (approx length " . strlen($html_output) . "). Starts with: " . substr(preg_replace('/\s+/', ' ', $html_output), 0, 200));
 }
+add_action( 'woocommerce_admin_order_data_after_order_details', 'jfbwqa_render_quote_controls_section', 20, 1 );
 
 /**
  * Save Meta Box Data for Sending Prepared Quote
