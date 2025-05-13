@@ -1483,30 +1483,54 @@ function jfbwqa_enqueue_order_edit_scripts( $hook ) {
 add_action( 'admin_print_footer_scripts', 'jfbwqa_output_quote_modal_html', 99 ); // New hook, late priority
 
 function jfbwqa_output_quote_modal_html() {
-    jfbwqa_write_log("DEBUG: jfbwqa_output_quote_modal_html - Function CALLED."); // Log entry
+    jfbwqa_write_log("DEBUG: jfbwqa_output_quote_modal_html - Function CALLED.");
 
     $screen = get_current_screen();
     
     if ( ! $screen ) {
-        jfbwqa_write_log("DEBUG: Modal HTML not rendered. get_current_screen() returned null.");
+        jfbwqa_write_log("DEBUG: Modal HTML not rendered: get_current_screen() returned null.");
         return;
     }
 
-    jfbwqa_write_log("DEBUG: Modal HTML - Screen ID: {$screen->id}, Post Type: {$screen->post_type}, Base: {$screen->base}");
+    jfbwqa_write_log("DEBUG: Modal HTML - Screen ID: " . ($screen->id ?? 'N/A') . ", Screen Post Type: " . ($screen->post_type ?? 'N/A') . ", Screen Base: " . ($screen->base ?? 'N/A'));
 
-    // Check if we are on the shop_order edit page
-    if ( 'shop_order' !== $screen->post_type || 'post' !== $screen->base ) {
-        jfbwqa_write_log("DEBUG: Modal HTML not rendered. Screen conditions not met (shop_order & post base).");
+    $is_order_edit_screen = false;
+    $order_id = 0;
+
+    // Check for traditional post edit screen for a shop_order
+    if ( $screen->post_type === 'shop_order' && $screen->base === 'post' ) {
+        if (isset($_GET['post'])) {
+            $order_id = absint($_GET['post']);
+            if ($order_id > 0) $is_order_edit_screen = true;
+        } else {
+            global $post;
+            if ($post && isset($post->ID) && get_post_type($post->ID) === 'shop_order'){
+                $order_id = $post->ID;
+                if ($order_id > 0) $is_order_edit_screen = true;
+            }
+        }
+    }
+    
+    // Check for HPOS / new WooCommerce admin order edit screen
+    // The screen ID might be like 'woocommerce_page_wc-orders' and action='edit' with an 'id' URL parameter
+    if ( !$is_order_edit_screen && strpos($screen->id, 'woocommerce_page_wc-orders') !== false ) {
+        if (isset($_GET['action']) && $_GET['action'] === 'edit' && isset($_GET['id'])) {
+            $order_id = absint($_GET['id']);
+            if ($order_id > 0) $is_order_edit_screen = true;
+        }
+    }
+
+    if ( !$is_order_edit_screen ) {
+        jfbwqa_write_log("DEBUG: Modal HTML not rendered: Not identified as a single order edit screen. Order ID derived: {$order_id}");
         return; 
     }
-
-    global $post; // The $post global should be available if $screen->base is 'post'
-    if ( ! $post || !isset($post->ID) ) {
-        jfbwqa_write_log("DEBUG: Modal HTML not rendered. Global \$post not available or no ID for order on screen ID: {$screen->id}.");
+    
+    if ( $order_id === 0 ) {
+        jfbwqa_write_log("DEBUG: Modal HTML not rendered: Order ID resolved to 0 after checks.");
         return;
     }
-    $order_id = $post->ID;
-    jfbwqa_write_log("DEBUG: jfbwqa_output_quote_modal_html IS ATTEMPTING to render for order ID: {$order_id} on screen ID: {$screen->id}"); // Changed log message for clarity
+
+    jfbwqa_write_log("DEBUG: jfbwqa_output_quote_modal_html IS ATTEMPTING to render for order ID: {$order_id} on screen ID: {$screen->id}");
 
     $custom_message = get_post_meta( $order_id, '_jfbwqa_quote_custom_message', true );
     $include_pricing_value = get_post_meta( $order_id, '_jfbwqa_quote_include_pricing', true );
@@ -1543,7 +1567,7 @@ function jfbwqa_output_quote_modal_html() {
         </div>
     </div>
     <?php
-    jfbwqa_write_log("DEBUG: jfbwqa_output_quote_modal_html has rendered.");
+    jfbwqa_write_log("DEBUG: jfbwqa_output_quote_modal_html DID RENDER for order ID: {$order_id}");
 }
 
 ?>
