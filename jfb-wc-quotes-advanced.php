@@ -421,6 +421,10 @@ function jfbwqa_handle_order_action( $order ) {
     $reply_to_email = sanitize_email($options['email_reply_to']); $cc_email = sanitize_email($options['email_cc']);
     $body_template = $options['email_default_body'];
 
+    // *** NEW: Get the custom message from order meta ***
+    $custom_admin_message = get_post_meta( $order_id, '_jfbwqa_custom_email_message', true );
+    // *** END NEW ***
+
     // Get Recipient & Validate
     $recipient_email = $order->get_billing_email();
     if ( ! is_email( $recipient_email ) ) { /* ... error handling ... */
@@ -436,7 +440,7 @@ function jfbwqa_handle_order_action( $order ) {
     $subject = str_replace(array_keys($replacements), array_values($replacements), $subject_template);
     $heading = str_replace(array_keys($replacements), array_values($replacements), $heading_template);
 
-    // Process body placeholders
+    // Process body placeholders (Make sure to remove the [Order Details Table] replacement if using the template action)
     $email_body = jfbwqa_replace_email_placeholders( $body_template, $order );
 
     // Get Email HTML using WC Template System
@@ -451,10 +455,17 @@ function jfbwqa_handle_order_action( $order ) {
     }
     $mailer = WC()->mailer();
     ob_start();
-    wc_get_template( $template_name, [ /* Args */
-           'order' => $order, 'email_heading' => $heading, 'email_body_content' => $email_body,
-           'sent_to_admin' => false, 'plain_text' => false, 'email' => $mailer
+    // *** MODIFIED: Pass the custom message and processed default body to the template ***
+    wc_get_template( $template_name, [
+           'order' => $order,
+           'email_heading' => $heading,
+           'email_body_content' => $email_body, // Default body with placeholders replaced
+           'additional_content' => wpautop(wptexturize($custom_admin_message)), // Pass the custom message here (rename if you prefer)
+           'sent_to_admin' => false,
+           'plain_text' => false,
+           'email' => $mailer
        ], 'jfb-wc-quotes-advanced/', $template_path_default );
+    // *** END MODIFIED ***
     $email_html_content = ob_get_clean();
     $email_html_content = $mailer ? $mailer->wrap_message($heading, $email_html_content) : $email_html_content; // Wrap if mailer exists
 
@@ -466,12 +477,20 @@ function jfbwqa_handle_order_action( $order ) {
     if ( !empty($cc_email) && is_email($cc_email) ) $headers[] = "Cc: <{$cc_email}>";
 
     // Send Email
-    jfbwqa_write_log("Sending estimate email to {$recipient_email} for order #{$order_id}.");
+    jfbwqa_write_log("Sending estimate email to {$recipient_email} for order #{$order_id}. Custom message included: " . (!empty($custom_admin_message) ? 'Yes' : 'No'));
     $sent = wp_mail( $recipient_email, $subject, $email_html_content, $headers );
 
     // Log Result
     if ( $sent ) { /* ... success note & log ... */
+        // *** Optional: Clear the custom message meta after sending ***
+        // update_post_meta( $order_id, '_jfbwqa_custom_email_message', '' );
+        // jfbwqa_write_log("Cleared custom email message for order #{$order_id} after sending.");
+        // *** End Optional ***
+
         $note = __('Estimate Request email sent to customer via order action.', 'jfb-wc-quotes-advanced');
+        if (!empty($custom_admin_message)) {
+            $note .= ' ' . __('Custom message included.', 'jfb-wc-quotes-advanced');
+        }
         $order->add_order_note( $note, false, false );
         jfbwqa_write_log("Email SENT successfully for order #{$order_id}.");
         add_action('admin_notices', function() use ($order) { printf('<div class="notice notice-success is-dismissible"><p>%s</p></div>', sprintf(esc_html__('Estimate Request email sent successfully for Order #%s.', 'jfb-wc-quotes-advanced'), esc_html($order->get_order_number()))); });
@@ -918,6 +937,66 @@ function jfbwqa_render_settings_page() {
 add_action( 'plugins_loaded', 'jfbwqa_load_textdomain' );
 function jfbwqa_load_textdomain() {
     load_plugin_textdomain( 'jfb-wc-quotes-advanced', false, dirname( plugin_basename( __FILE__ ) ) . '/languages/' );
+}
+
+/**
+ * Add Custom Email Message Metabox to Order Edit Screen
+ */
+add_action( 'add_meta_boxes', 'jfbwqa_add_custom_email_message_metabox' );
+function jfbwqa_add_custom_email_message_metabox() {
+    add_meta_box(
+        'jfbwqa_custom_email_message',                 // ID
+        __('Custom Estimate Email Message', 'jfb-wc-quotes-advanced'), // Title
+        'jfbwqa_render_custom_email_message_metabox', // Callback function
+        'shop_order',                                  // Post type
+        'side',                                        // Context (normal, side, advanced)
+        'low'                                          // Priority
+    );
+}
+
+/**
+ * Render the Custom Email Message Metabox Content
+ */
+function jfbwqa_render_custom_email_message_metabox( $post ) {
+    // Add nonce for security
+    wp_nonce_field( 'jfbwqa_save_custom_message_meta', 'jfbwqa_custom_message_nonce' );
+
+    $custom_message = get_post_meta( $post->ID, '_jfbwqa_custom_email_message', true );
+
+    echo '<textarea id="jfbwqa_custom_email_textarea" name="jfbwqa_custom_email_message" style="width:100%; height: 150px;" placeholder="' . esc_attr__('Enter an optional custom message to include in the estimate email...', 'jfb-wc-quotes-advanced') . '">' . esc_textarea( $custom_message ) . '</textarea>';
+    echo '<p class="description">' . esc_html__('This message will be included in the email sent via the "Send Estimate Request Email" order action. Leave blank to use only the default template body.', 'jfb-wc-quotes-advanced') . '</p>';
+     // Optional: Add a button to clear the message after sending?
+     // echo '<button type="button" id="jfbwqa_clear_custom_message" class="button button-secondary">' . __('Clear Message', 'jfb-wc-quotes-advanced') . '</button>';
+}
+
+/**
+ * Save the Custom Email Message Metabox Data
+ */
+add_action( 'save_post_shop_order', 'jfbwqa_save_custom_email_message_meta', 10, 1 );
+function jfbwqa_save_custom_email_message_meta( $post_id ) {
+    // Check nonce
+    if ( ! isset( $_POST['jfbwqa_custom_message_nonce'] ) || ! wp_verify_nonce( $_POST['jfbwqa_custom_message_nonce'], 'jfbwqa_save_custom_message_meta' ) ) {
+        return $post_id;
+    }
+
+    // Check user permissions
+    if ( ! current_user_can( 'edit_post', $post_id ) ) {
+        return $post_id;
+    }
+
+    // Check if it's an autosave
+    if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+        return $post_id;
+    }
+
+    // Sanitize and save the data
+    $custom_message = isset( $_POST['jfbwqa_custom_email_message'] ) ? wp_kses_post( $_POST['jfbwqa_custom_email_message'] ) : '';
+    update_post_meta( $post_id, '_jfbwqa_custom_email_message', $custom_message );
+
+    // Optional: Clear the message after saving if a flag is set (e.g., by a clear button click)
+    // if (isset($_POST['jfbwqa_clear_message_flag']) && $_POST['jfbwqa_clear_message_flag'] == '1') {
+    //     update_post_meta( $post_id, '_jfbwqa_custom_email_message', '');
+    // }
 }
 
 ?>
