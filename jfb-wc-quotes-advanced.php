@@ -1364,21 +1364,24 @@ function jfbwqa_add_prepared_quote_metabox_revised( $post_or_order_object ) {
 
 // This function will now render the content for the meta box.
 function jfbwqa_render_prepared_quote_metabox_content( $post_or_order_object ) {
-    // $post_or_order_object is WP_Post or WC_Order object passed by do_meta_boxes
-    $order_id = 0;
-    if ( $post_or_order_object instanceof WP_Post ) {
-        $order_id = $post_or_order_object->ID;
-    } elseif ( $post_or_order_object instanceof WC_Order ) {
-        // For WC > 3.0, it often passes the WC_Order object to metabox callbacks if available
-        $order_id = $post_or_order_object->get_id();
+    // This function is currently not used (meta box registration disabled / not working due to JS conflict)
+    // The rendering logic will be in jfbwqa_render_quote_controls_section_hooked
+    jfbwqa_write_log("DEBUG: jfbwqa_render_prepared_quote_metabox_content (currently unused) called.");
+}
+
+// Renaming to avoid confusion with the meta box render function, and hooking to the item actions area
+function jfbwqa_render_quote_controls_for_actions( $order ) {
+    if ( ! $order instanceof WC_Order ) {
+        // If $order is just an ID (as it is for woocommerce_order_item_add_action_buttons), get the order object
+        $order = wc_get_order( $order );
+        if ( ! $order ) {
+            jfbwqa_write_log('ERROR: jfbwqa_render_quote_controls_for_actions - Could not get order object.');
+            // Don't echo here as it might break button layout, just log.
+            return;
+        }
     }
-    
-    if ( ! $order_id ) {
-        jfbwqa_write_log('ERROR: jfbwqa_render_prepared_quote_metabox_content - Could not get order ID.');
-        echo '<p>Error: Could not load order data.</p>';
-        return;
-    }
-    jfbwqa_write_log("DEBUG: jfbwqa_render_prepared_quote_metabox_content called for order ID: {$order_id}");
+    $order_id = $order->get_id();
+    jfbwqa_write_log("DEBUG: jfbwqa_render_quote_controls_for_actions called for order ID: {$order_id} (hook: woocommerce_order_item_add_action_buttons)");
 
     wp_nonce_field( 'jfbwqa_save_quote_meta', 'jfbwqa_quote_meta_nonce' );
 
@@ -1386,68 +1389,46 @@ function jfbwqa_render_prepared_quote_metabox_content( $post_or_order_object ) {
     $include_pricing_value = get_post_meta( $order_id, '_jfbwqa_quote_include_pricing', true );
     $include_pricing = ( $include_pricing_value === '' || $include_pricing_value === 'yes' ) ? 'yes' : 'no';
 
-    // Using a heredoc for cleaner HTML structure inside PHP
-    $html = <<<HTML
-    <p style="text-align: left;"><?php esc_html_e('Configure and send the prepared quote to the customer.', 'jfb-wc-quotes-advanced'); ?></p>
-
-    <div id="jfbwqa_custom_quote_message_area" style="margin-bottom:15px; text-align: left;">
-        <h4 style="text-align: left; margin-bottom: 5px;"><?php esc_html_e('Custom Message (Optional)', 'jfb-wc-quotes-advanced'); ?></h4>
-        <textarea id="jfbwqa_custom_quote_message" name="jfbwqa_custom_quote_message" style="width:100%; height: 100px;" placeholder="<?php esc_attr_e('This message will be added to the quote email...', 'jfb-wc-quotes-advanced'); ?>">{$custom_message}</textarea>
-    </div>
-
-    <div id="jfbwqa_include_pricing_area" style="margin-bottom:15px; text-align: left;">
-        <label><input type="checkbox" id="jfbwqa_include_pricing" name="jfbwqa_include_pricing" value="yes" 
-HTML
-    . checked( $include_pricing, 'yes', false ) .
-    <<<HTML
-        /> <?php esc_html_e('Include Pricing in this Quote', 'jfb-wc-quotes-advanced'); ?></label>
-    </div>
-
-    <div id="jfbwqa_available_placeholders_info" style="margin-bottom:15px; padding: 10px; background-color: #f8f8f8; border: 1px solid #e5e5e5; text-align: left;">
-        <strong><?php esc_html_e('Available Placeholders:', 'jfb-wc-quotes-advanced'); ?></strong><br>
-        <code>{order_number}</code>, <code>{customer_name}</code>, <code>{customer_first_name}</code>, <code>{site_title}</code>, etc.<br>
-        <?php esc_html_e('JetEngine fields: ', 'jfb-wc-quotes-advanced'); ?><code>{[your_jet_engine_field_key]}</code><br>
-        <code>[Order Details Table]</code> - inserts the items table.<br>
-        <code>{additional_message_from_admin}</code> - used for this custom message.
-    </div>
-
-    <div style="margin-top: 15px; text-align: left;">
-        <button type="button" id="jfbwqa_send_quote_button" class="button button-primary"><?php esc_html_e('Send Prepared Quote Email', 'jfb-wc-quotes-advanced'); ?></button>
-        <span id="jfbwqa_spinner" class="spinner" style="float:none; vertical-align: middle;"></span>
-        <p class="description" style="text-align: left;"><?php esc_html_e('Clicking this will save the message/settings above and trigger the email.', 'jfb-wc-quotes-advanced'); ?></p>
-    </div>
-    <div id="jfbwqa_send_status_message" style="margin-top: 10px; padding: 10px; display:none; text-align: left;"></div>
-HTML;
-    // Need to process PHP within the heredoc manually or use ob_start/ob_get_clean if complex.
-    // For simple esc_html_e, it might be easier to concatenate or use printf.
-    // Let's use ob_start for robustness with translations.
     ob_start();
     ?>
-    <p style="text-align: left;"><?php echo esc_html__('Configure and send the prepared quote to the customer.', 'jfb-wc-quotes-advanced'); ?></p>
-    <div id="jfbwqa_custom_quote_message_area" style="margin-bottom:15px; text-align: left;">
-        <h4 style="text-align: left; margin-bottom: 5px;"><?php echo esc_html__('Custom Message (Optional)', 'jfb-wc-quotes-advanced'); ?></h4>
-        <textarea id="jfbwqa_custom_quote_message" name="jfbwqa_custom_quote_message" style="width:100%; height: 100px;" placeholder="<?php echo esc_attr__('This message will be added to the quote email...', 'jfb-wc-quotes-advanced'); ?>"><?php echo esc_textarea( $custom_message ); ?></textarea>
+    <div class="jfbwqa-quote-controls-after-buttons" style="clear: both; margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd; text-align: left;">
+        <h3 style="text-align: center; margin-bottom: 15px;"><?php esc_html_e('Prepare & Send Quote Email', 'jfb-wc-quotes-advanced'); ?></h3>
+        
+        <p><?php esc_html_e('Configure and send the prepared quote to the customer.', 'jfb-wc-quotes-advanced'); ?></p>
+
+        <div id="jfbwqa_custom_quote_message_area" style="margin-bottom:15px;">
+            <h4 style="margin-bottom: 5px;"><?php esc_html_e('Custom Message (Optional)', 'jfb-wc-quotes-advanced'); ?></h4>
+            <textarea id="jfbwqa_custom_quote_message" name="jfbwqa_custom_quote_message" style="width:100%; height: 100px;" placeholder="<?php esc_attr_e('This message will be added to the quote email...', 'jfb-wc-quotes-advanced'); ?>"><?php echo esc_textarea( $custom_message ); ?></textarea>
+        </div>
+
+        <div id="jfbwqa_include_pricing_area" style="margin-bottom:15px;">
+            <label><input type="checkbox" id="jfbwqa_include_pricing" name="jfbwqa_include_pricing" value="yes" <?php checked( $include_pricing, 'yes' ); ?> /> <?php esc_html_e('Include Pricing in this Quote', 'jfb-wc-quotes-advanced'); ?></label>
+        </div>
+
+        <div id="jfbwqa_available_placeholders_info" style="margin-bottom:15px; padding: 10px; background-color: #f8f8f8; border: 1px solid #e5e5e5;">
+            <strong><?php esc_html_e('Available Placeholders:', 'jfb-wc-quotes-advanced'); ?></strong><br>
+            <code>{order_number}</code>, <code>{customer_name}</code>, <code>{customer_first_name}</code>, <code>{site_title}</code>, etc.<br>
+            <?php esc_html_e('JetEngine fields: ', 'jfb-wc-quotes-advanced'); ?><code>{[your_jet_engine_field_key]}</code><br>
+            <code>[Order Details Table]</code> - inserts the items table.<br>
+            <code>{additional_message_from_admin}</code> - used for this custom message.
+        </div>
+
+        <div style="margin-top: 15px;">
+            <button type="button" id="jfbwqa_send_quote_button" class="button button-primary"><?php esc_html_e('Send Prepared Quote Email', 'jfb-wc-quotes-advanced'); ?></button>
+            <span id="jfbwqa_spinner" class="spinner" style="float:none; vertical-align: middle;"></span>
+            <p class="description"><?php esc_html_e('Clicking this will save the message/settings above and trigger the email.', 'jfb-wc-quotes-advanced'); ?></p>
+        </div>
+         <div id="jfbwqa_send_status_message" style="margin-top: 10px; padding: 10px; display:none;"></div>
     </div>
-    <div id="jfbwqa_include_pricing_area" style="margin-bottom:15px; text-align: left;">
-        <label><input type="checkbox" id="jfbwqa_include_pricing" name="jfbwqa_include_pricing" value="yes" <?php checked( $include_pricing, 'yes' ); ?> /> <?php echo esc_html__('Include Pricing in this Quote', 'jfb-wc-quotes-advanced'); ?></label>
-    </div>
-    <div id="jfbwqa_available_placeholders_info" style="margin-bottom:15px; padding: 10px; background-color: #f8f8f8; border: 1px solid #e5e5e5; text-align: left;">
-        <strong><?php echo esc_html__('Available Placeholders:', 'jfb-wc-quotes-advanced'); ?></strong><br>
-        <code>{order_number}</code>, <code>{customer_name}</code>, <code>{customer_first_name}</code>, <code>{site_title}</code>, etc.<br>
-        <?php echo esc_html__('JetEngine fields: ', 'jfb-wc-quotes-advanced'); ?><code>{[your_jet_engine_field_key]}</code><br>
-        <code>[Order Details Table]</code> - inserts the items table.<br>
-        <code>{additional_message_from_admin}</code> - used for this custom message.
-    </div>
-    <div style="margin-top: 15px; text-align: left;">
-        <button type="button" id="jfbwqa_send_quote_button" class="button button-primary"><?php echo esc_html__('Send Prepared Quote Email', 'jfb-wc-quotes-advanced'); ?></button>
-        <span id="jfbwqa_spinner" class="spinner" style="float:none; vertical-align: middle;"></span>
-        <p class="description" style="text-align: left;"><?php echo esc_html__('Clicking this will save the message/settings above and trigger the email.', 'jfb-wc-quotes-advanced'); ?></p>
-    </div>
-    <div id="jfbwqa_send_status_message" style="margin-top: 10px; padding: 10px; display:none; text-align: left;"></div>
     <?php
-    echo ob_get_clean();
-    jfbwqa_write_log("DEBUG: jfbwqa_render_prepared_quote_metabox_content rendered for order ID: {$order_id}");
+    $html_output = ob_get_clean();
+    echo $html_output; 
+    jfbwqa_write_log("DEBUG: jfbwqa_render_quote_controls_for_actions outputting HTML (approx length " . strlen($html_output) . "). Starts with: " . substr(preg_replace('/\s+/', ' ', $html_output), 0, 200));
 }
+// Remove previous hook attempts
+// remove_action( 'woocommerce_admin_order_data_after_order_details', 'jfbwqa_render_quote_controls_section', 20 ); 
+// remove_action( 'woocommerce_admin_order_totals_after_total', 'jfbwqa_render_quote_controls_section', 10 );
+add_action( 'woocommerce_order_item_add_action_buttons', 'jfbwqa_render_quote_controls_for_actions', 20, 1 );
 
 /**
  * Save Meta Box Data for Sending Prepared Quote
