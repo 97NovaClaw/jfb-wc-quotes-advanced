@@ -1479,16 +1479,31 @@ function jfbwqa_enqueue_order_edit_scripts( $hook ) {
 /**
  * Output HTML for the quote response modal in the admin footer.
  */
-add_action( 'admin_footer-post.php', 'jfbwqa_output_quote_modal_html' ); // Only on post edit screens
+// add_action( 'admin_footer-post.php', 'jfbwqa_output_quote_modal_html' ); // Previous hook
+add_action( 'admin_print_footer_scripts', 'jfbwqa_output_quote_modal_html', 99 ); // New hook, late priority
+
 function jfbwqa_output_quote_modal_html() {
-    global $post;
-    if ( ! $post || 'shop_order' !== $post->post_type ) {
-        return; // Only output for shop_order edit screen
+    $screen = get_current_screen();
+    
+    // Check if we are on the shop_order edit page
+    if ( ! $screen || 'shop_order' !== $screen->post_type || 'post' !== $screen->base ) {
+        // Log if screen is not as expected, then return
+        // if ($screen) { 
+        //     jfbwqa_write_log("DEBUG: Modal HTML not rendered. Screen ID: {$screen->id}, Post Type: {$screen->post_type}, Base: {$screen->base}"); 
+        // } else {
+        //     jfbwqa_write_log("DEBUG: Modal HTML not rendered. Screen object not available.");
+        // }
+        return; 
+    }
+
+    global $post; // The $post global should be available if $screen->base is 'post'
+    if ( ! $post || !isset($post->ID) ) {
+        jfbwqa_write_log("DEBUG: Modal HTML not rendered. Global \$post not available or no ID for order on screen ID: {$screen->id}.");
+        return;
     }
     $order_id = $post->ID;
-    jfbwqa_write_log("DEBUG: jfbwqa_output_quote_modal_html attempting to render for order ID: {$order_id}");
+    jfbwqa_write_log("DEBUG: jfbwqa_output_quote_modal_html attempting to render for order ID: {$order_id} on screen ID: {$screen->id}");
 
-    // We still need to get existing values for the modal fields if they exist
     $custom_message = get_post_meta( $order_id, '_jfbwqa_quote_custom_message', true );
     $include_pricing_value = get_post_meta( $order_id, '_jfbwqa_quote_include_pricing', true );
     $include_pricing = ( $include_pricing_value === '' || $include_pricing_value === 'yes' ) ? 'yes' : 'no';
