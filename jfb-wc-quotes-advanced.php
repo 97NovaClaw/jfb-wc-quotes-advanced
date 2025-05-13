@@ -624,7 +624,7 @@ function jfbwqa_replace_email_placeholders( $content, $order ) {
             'order'                 => $order,
             'items'                 => $order_items,
             'show_sku'              => false, // Adjust as needed
-            'show_image'            => false, // Adjust as needed
+            'show_image'            => true, // ENABLED product images
             'image_size'            => array( 32, 32 ), // Adjust as needed
             'plain_text'            => false,
             'sent_to_admin'         => false,
