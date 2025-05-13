@@ -1483,16 +1483,20 @@ function jfbwqa_enqueue_order_edit_scripts( $hook ) {
 add_action( 'admin_print_footer_scripts', 'jfbwqa_output_quote_modal_html', 99 ); // New hook, late priority
 
 function jfbwqa_output_quote_modal_html() {
+    jfbwqa_write_log("DEBUG: jfbwqa_output_quote_modal_html - Function CALLED."); // Log entry
+
     $screen = get_current_screen();
     
+    if ( ! $screen ) {
+        jfbwqa_write_log("DEBUG: Modal HTML not rendered. get_current_screen() returned null.");
+        return;
+    }
+
+    jfbwqa_write_log("DEBUG: Modal HTML - Screen ID: {$screen->id}, Post Type: {$screen->post_type}, Base: {$screen->base}");
+
     // Check if we are on the shop_order edit page
-    if ( ! $screen || 'shop_order' !== $screen->post_type || 'post' !== $screen->base ) {
-        // Log if screen is not as expected, then return
-        // if ($screen) { 
-        //     jfbwqa_write_log("DEBUG: Modal HTML not rendered. Screen ID: {$screen->id}, Post Type: {$screen->post_type}, Base: {$screen->base}"); 
-        // } else {
-        //     jfbwqa_write_log("DEBUG: Modal HTML not rendered. Screen object not available.");
-        // }
+    if ( 'shop_order' !== $screen->post_type || 'post' !== $screen->base ) {
+        jfbwqa_write_log("DEBUG: Modal HTML not rendered. Screen conditions not met (shop_order & post base).");
         return; 
     }
 
@@ -1502,7 +1506,7 @@ function jfbwqa_output_quote_modal_html() {
         return;
     }
     $order_id = $post->ID;
-    jfbwqa_write_log("DEBUG: jfbwqa_output_quote_modal_html attempting to render for order ID: {$order_id} on screen ID: {$screen->id}");
+    jfbwqa_write_log("DEBUG: jfbwqa_output_quote_modal_html IS ATTEMPTING to render for order ID: {$order_id} on screen ID: {$screen->id}"); // Changed log message for clarity
 
     $custom_message = get_post_meta( $order_id, '_jfbwqa_quote_custom_message', true );
     $include_pricing_value = get_post_meta( $order_id, '_jfbwqa_quote_include_pricing', true );

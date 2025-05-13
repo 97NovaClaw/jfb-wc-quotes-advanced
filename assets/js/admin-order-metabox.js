@@ -1,41 +1,41 @@
 jQuery(document).ready(function($) {
-    console.log('JFBWQA: admin-order-metabox.js (modal version) loaded successfully.');
+    console.log('JFBWQA: admin-order-metabox.js (modal version with delegated event) loaded.');
 
     var $modal = $('#jfbwqa-quote-response-modal');
-    var $openModalButton = $('#jfbwqa_open_quote_modal_button');
-    var $closeModalButton = $('#jfbwqa-modal-close');
-    var $sendEmailInModalButton = $('#jfbwqa_send_quote_button_modal');
+    // Note: $openModalButton is not strictly needed here as we use a delegated event
 
-    console.log('JFBWQA: Modal element:', $modal.length, 'Open button:', $openModalButton.length);
-
-    if ($openModalButton.length > 0 && $modal.length > 0) {
-        $openModalButton.on('click', function() {
-            console.log('JFBWQA: Open Estimate Response Modal button clicked.');
-            // Optionally, load current values into modal fields if they could be stale
-            // For now, assuming PHP populates them correctly on page load.
-            $modal.fadeIn(200);
-        });
-        console.log('JFBWQA: Click handler attached to Open Modal button.');
-    } else {
-        if ($openModalButton.length === 0) console.warn('JFBWQA: Open Modal button (#jfbwqa_open_quote_modal_button) not found.');
-        if ($modal.length === 0) console.warn('JFBWQA: Modal element (#jfbwqa-quote-response-modal) not found.');
+    if ($modal.length === 0) {
+        console.warn('JFBWQA: Modal element (#jfbwqa-quote-response-modal) not found. Modal cannot be opened.');
+        // If the modal HTML itself is missing, no point in attaching handlers for it.
+        return; 
     }
+    console.log('JFBWQA: Modal element found.');
 
-    if ($closeModalButton.length > 0 && $modal.length > 0) {
-        $closeModalButton.on('click', function() {
-            console.log('JFBWQA: Modal close button clicked.');
+    // Delegated event handler for opening the modal
+    $(document).on('click', '#jfbwqa_open_quote_modal_button', function(e) {
+        e.preventDefault(); // Good practice for buttons that don't submit forms
+        console.log('JFBWQA: Open Estimate Response Modal button clicked (delegated).');
+        $modal.fadeIn(200);
+    });
+    console.log('JFBWQA: Delegated click handler attached to document for #jfbwqa_open_quote_modal_button.');
+
+    // Modal Close Button
+    $('#jfbwqa-modal-close').on('click', function() {
+        console.log('JFBWQA: Modal close button clicked.');
+        $modal.fadeOut(200);
+    });
+
+    // Click on overlay to close
+    $modal.on('click', function(e) {
+        if (e.target === this) {
+            console.log('JFBWQA: Modal background clicked, closing modal.');
             $modal.fadeOut(200);
-        });
-        // Also close if clicking on the background overlay
-        $modal.on('click', function(e) {
-            if (e.target === this) { // if the click target is the modal background itself
-                console.log('JFBWQA: Modal background clicked, closing modal.');
-                $modal.fadeOut(200);
-            }
-        });
-        console.log('JFBWQA: Click handlers attached to Modal close mechanisms.');
-    }
+        }
+    });
+    console.log('JFBWQA: Click handlers attached to Modal close mechanisms.');
 
+    // Send Email button inside the modal
+    var $sendEmailInModalButton = $('#jfbwqa_send_quote_button_modal');
     if ($sendEmailInModalButton.length > 0) {
         $sendEmailInModalButton.on('click', function() {
             console.log('JFBWQA: Send Email button inside modal clicked.');
@@ -71,7 +71,6 @@ jQuery(document).ready(function($) {
                     console.log('JFBWQA: Modal - AJAX success:', response);
                     if (response.success) {
                         $statusMessage.html(response.data.message).removeClass('notice-error notice-warning').addClass('notice-success notice is-dismissible').show();
-                        // setTimeout(function(){ $modal.fadeOut(200); }, 3000); // Optionally close modal on success after a delay
                     } else {
                         var errorMessage = response.data && response.data.message ? response.data.message : jfbwqa_metabox_params.error_text;
                         $statusMessage.html(errorMessage).removeClass('notice-success notice-warning').addClass('notice-error notice is-dismissible').show();
