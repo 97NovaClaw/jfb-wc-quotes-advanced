@@ -20,11 +20,14 @@ defined( 'ABSPATH' ) || exit;
 $text_align  = is_rtl() ? 'right' : 'left';
 $margin_side = is_rtl() ? 'left' : 'right';
 
+// JFBWQA: Determine if prices are being shown from the passed arguments
+$show_prices = isset($show_prices) && $show_prices === true;
+
 foreach ( $items as $item_id => $item ) :
 	$product       = $item->get_product();
 	$sku           = '';
 	$purchase_note = '';
-	$image         = '';
+	$image_html    = ''; // Initialize image html
 
 	if ( ! apply_filters( 'woocommerce_order_item_visible', true, $item ) ) {
 		continue;
@@ -33,88 +36,77 @@ foreach ( $items as $item_id => $item ) :
 	if ( is_object( $product ) ) {
 		$sku           = $product->get_sku();
 		$purchase_note = $product->get_purchase_note();
-		$image         = $product->get_image( $image_size ); // $image_size is passed from $table_args
+        if ( $show_image ) { // $show_image is passed from $table_args in the main plugin file
+            $image_html_raw = $product->get_image( $image_size ); 
+            if (strpos($image_html_raw, 'style=') !== false) {
+                $image_html = str_replace('style="', 'style="margin-right:10px; vertical-align:middle; ', $image_html_raw);
+            } else {
+                $image_html = str_replace('<img ', '<img style="margin-right:10px; vertical-align:middle;" ', $image_html_raw);
+            }
+        }
 	}
 
 	?>
 	<tr class="<?php echo esc_attr( apply_filters( 'woocommerce_order_item_class', 'order_item', $item, $order ) ); ?>">
-		<td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align: middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; word-wrap:break-word;">
+		<td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; word-wrap:break-word; <?php if (!$show_prices) echo 'width: 70%;'; /* Give more space if no price */ ?>">
 		<?php
-
-		// Show title/image etc.
-		if ( $show_image ) { // $show_image is passed from $table_args
-			// JFBWQA: Add margin to the image
-			$image_html = $product->get_image( $image_size ); // Get image HTML first
-			// Add style directly. This is a bit crude; a filter on $image itself or its attributes would be more elegant for complex changes.
-			if (strpos($image_html, 'style=') !== false) {
-				$image_html = str_replace('style="', 'style="margin-right:10px; ', $image_html);
-			} else {
-				$image_html = str_replace('<img ', '<img style="margin-right:10px;" ', $image_html);
-			}
-			echo wp_kses_post( apply_filters( 'woocommerce_order_item_thumbnail', $image_html, $item ) );
-		}
+		echo wp_kses_post( apply_filters( 'woocommerce_order_item_thumbnail', $image_html, $item ) );
 
 		// Product name.
-		echo wp_kses_post( apply_filters( 'woocommerce_order_item_name', $item->get_name(), $item, false ) );
+		echo '<span style="vertical-align:middle;">' . wp_kses_post( apply_filters( 'woocommerce_order_item_name', $item->get_name(), $item, false ) ) . '</span>';
 
 		// SKU.
 		if ( $show_sku && $sku ) { // $show_sku is passed from $table_args
 			echo wp_kses_post( ' (#' . $sku . ')' );
 		}
 
-		// allow other plugins to add additional product information here.
 		do_action( 'woocommerce_order_item_meta_start', $item_id, $item, $order, $plain_text );
-
-		wc_display_item_meta(
-			$item,
-			array(
-				'label_before' => '<strong class="wc-item-meta-label" style="float: ' . esc_attr( $text_align ) . '; margin-' . esc_attr( $margin_side ) . ': .25em; clear: both">',
-			)
-		);
-
-		// allow other plugins to add additional product information here.
+		wc_display_item_meta( $item, array( 'label_before' => '<strong class="wc-item-meta-label" style="float: ' . esc_attr( $text_align ) . '; margin-' . esc_attr( $margin_side ) . ': .25em; clear: both">' ) );
 		do_action( 'woocommerce_order_item_meta_end', $item_id, $item, $order, $plain_text );
-
 		?>
 		</td>
-		<td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif;">
+		<td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; <?php if (!$show_prices) echo 'width: 30%;'; /* Adjust width if no price */ ?>">
 			<?php
-			$qty          = $item->get_quantity();
-			$refunded_qty = $order->get_qty_refunded_for_item( $item_id );
-
-			if ( $refunded_qty ) {
-				$qty_display = '<del>' . esc_html( $qty ) . '</del> <ins>' . esc_html( $qty - ( $refunded_qty * -1 ) ) . '</ins>';
-			} else {
-				$qty_display = esc_html( $qty );
-			}
+			$qty_display = esc_html( $item->get_quantity() );
+			// Removed refunded qty logic for simplicity in quote context, can be added back if needed.
 			echo wp_kses_post( apply_filters( 'woocommerce_email_order_item_quantity', $qty_display, $item ) );
+            if (!$show_prices) { echo ' (' . esc_html__('Quantity', 'jfb-wc-quotes-advanced') . ')'; }
 			?>
 		</td>
-        <?php // JFBWQA: Conditional Price Column 
-        // The $show_prices variable is extracted from the arguments passed to this template by wc_get_template_html
-        // It originates from jfbwqa_replace_email_placeholders -> $table_args
-        if ( isset($show_prices) && $show_prices === true ) : ?>
+        <?php if ( $show_prices ) : ?>
             <td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif;">
-                <?php echo wp_kses_post( $order->get_formatted_line_subtotal( $item ) ); ?>
+                <?php echo wp_kses_post( $order->get_formatted_line_subtotal( $item ) ); // This is the line item subtotal (qty x price) ?>
             </td>
-        <?php else : ?>
-            <?php /* Price column intentionally left out if $show_prices is false */ ?>
         <?php endif; ?>
 	</tr>
 	<?php
-
-	if ( $show_purchase_note && $purchase_note ) { // $show_purchase_note is passed from $table_args
+	if ( $show_purchase_note && $purchase_note ) {
 		?>
 		<tr>
-            <?php // JFBWQA: Adjust colspan based on whether price column is shown ?>
-			<td colspan="<?php echo ( isset($show_prices) && $show_prices === true ) ? '3' : '2'; ?>" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif;">
-				<?php
-				echo wp_kses_post( wpautop( do_shortcode( $purchase_note ) ) );
-				?>
+			<td colspan="<?php echo $show_prices ? '3' : '2'; ?>" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif;">
+				<?php echo wp_kses_post( wpautop( do_shortcode( $purchase_note ) ) ); ?>
 			</td>
 		</tr>
 		<?php
 	}
 	?>
+<?php endforeach; ?>
 
-<?php endforeach; ?> 
+<?php 
+// JFBWQA: Add Order Totals if prices are shown
+if ( $show_prices ) :
+    $item_totals = $order->get_order_item_totals();
+    if ( $item_totals ) :
+        ?>
+        <tfoot>
+            <?php foreach ( $item_totals as $key => $total ) : ?>
+                <tr>
+                    <th class="td" scope="row" colspan="2" style="text-align:<?php echo esc_attr( $text_align ); ?>; <?php echo ( 'customer_note' === $key ) ? 'padding-bottom: 40px;' : ''; ?>border-top:1px solid #eee;"><?php echo esc_html( $total['label'] ); ?></th>
+                    <td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; <?php echo ( 'customer_note' === $key ) ? 'padding-bottom: 40px;' : ''; ?>border-top:1px solid #eee;"><?php echo wp_kses_post( $total['value'] ); ?></td>
+                </tr>
+            <?php endforeach; ?>
+        </tfoot>
+        <?php
+    endif;
+endif;
+?> 
