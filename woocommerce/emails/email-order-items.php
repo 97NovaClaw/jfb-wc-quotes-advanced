@@ -103,26 +103,26 @@ foreach ( $items as $item_id => $item ) :
 <?php endforeach; ?>
 
 <?php 
-// JFBWQA: Add Order Totals if prices are shown
-if ( $show_prices ) :
-    jfbwqa_write_log("DEBUG Email Items Template: show_prices is true. Attempting to get order item totals for order ID: " . $order->get_id()); // JFBWQA Log
-    $item_totals = $order->get_order_item_totals();
-    jfbwqa_write_log("DEBUG Email Items Template: Order item totals raw: " . print_r($item_totals, true)); // JFBWQA Log
-    if ( $item_totals ) :
-        ?>
-        <tfoot>
-            <?php foreach ( $item_totals as $key => $total ) : ?>
-                <tr>
-                    <th class="td" scope="row" colspan="2" style="text-align:<?php echo esc_attr( $text_align ); ?>; <?php echo ( 'customer_note' === $key ) ? 'padding-bottom: 40px;' : ''; ?>border-top:1px solid #eee;"><?php echo esc_html( $total['label'] ); ?></th>
-                    <td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; <?php echo ( 'customer_note' === $key ) ? 'padding-bottom: 40px;' : ''; ?>border-top:1px solid #eee;"><?php echo wp_kses_post( $total['value'] ); ?></td>
-                </tr>
-            <?php endforeach; ?>
-        </tfoot>
-        <?php
-    else :
-        jfbwqa_write_log("DEBUG Email Items Template: $order->get_order_item_totals() returned empty or false."); // JFBWQA Log
-    endif;
-else :
-    jfbwqa_write_log("DEBUG Email Items Template: show_prices is false. Not showing totals."); // JFBWQA Log
-endif;
+// JFBWQA: Order Totals are now handled directly in the main email body construction, not in this item template.
+// if ( $show_prices ) : 
+//     jfbwqa_write_log("DEBUG Email Items Template: show_prices is true. Attempting to get order item totals for order ID: " . $order->get_id()); 
+//     $item_totals = $order->get_order_item_totals();
+//     jfbwqa_write_log("DEBUG Email Items Template: Order item totals raw: " . print_r($item_totals, true)); 
+//     if ( $item_totals ) :
+//         ?>
+//         <tfoot>
+//             <?php foreach ( $item_totals as $key => $total ) : ?>
+//                 <tr>
+//                     <th class="td" scope="row" colspan="2" style="text-align:<?php echo esc_attr( $text_align ); ?>; <?php echo ( 'customer_note' === $key ) ? 'padding-bottom: 40px;' : ''; ?>border-top:1px solid #eee;"><?php echo esc_html( $total['label'] ); ?></th>
+//                     <td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; <?php echo ( 'customer_note' === $key ) ? 'padding-bottom: 40px;' : ''; ?>border-top:1px solid #eee;"><?php echo wp_kses_post( $total['value'] ); ?></td>
+//                 </tr>
+//             <?php endforeach; ?>
+//         </tfoot>
+//         <?php
+//     else :
+//         jfbwqa_write_log("DEBUG Email Items Template: \$order->get_order_item_totals() returned empty or false."); 
+//     endif;
+// else :
+//     jfbwqa_write_log("DEBUG Email Items Template: show_prices is false. Not showing totals."); 
+// endif;
 ?> 

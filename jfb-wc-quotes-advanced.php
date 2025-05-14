@@ -458,7 +458,7 @@ add_action( 'woocommerce_order_action_jfbwqa_send_estimate_email', 'jfbwqa_handl
 add_action( 'woocommerce_order_action_jfbwqa_send_prepared_quote', 'jfbwqa_handle_send_prepared_quote_action' ); // Handler now active
 
 // MODIFIED to accept all parts from AJAX or direct call if we add one later
-function jfbwqa_handle_send_prepared_quote_action( $order, $subject_from_modal = null, $heading_from_modal = null, $body_from_modal = null, $reply_to_from_modal = null, $cc_from_modal = null, $include_pricing_flag_from_modal = null ) {
+function jfbwqa_handle_send_prepared_quote_action( $order, $subject_from_modal = null, $heading_from_modal = null, $body_from_modal = null, $reply_to_from_modal = null, $cc_from_modal = null, $include_pricing_flag_from_modal = null, $include_total_tax_flag_from_modal = null ) { // New param
     if ( ! is_a( $order, 'WC_Order' ) ) {
         $order_id_val = absint($order);
         $order = wc_get_order($order_id_val);
@@ -485,8 +485,15 @@ function jfbwqa_handle_send_prepared_quote_action( $order, $subject_from_modal =
         // Fallback to order meta if action is triggered without AJAX (e.g., manually from order actions dropdown)
         $include_pricing_flag = get_post_meta( $order_id, '_jfbwqa_quote_include_pricing', true ) === 'yes';
     }
+    // Handle the new total_tax flag similarly
+    $include_total_tax_flag = false; // Default to false
+    if ($include_total_tax_flag_from_modal !== null) {
+        $include_total_tax_flag = $include_total_tax_flag_from_modal;
+    } else {
+        $include_total_tax_flag = get_post_meta( $order_id, '_jfbwqa_quote_include_total_tax', true ) === 'yes';
+    }
 
-    jfbwqa_write_log("DEBUG: Send Prepared Quote - Subject: {$subject_template}, Heading: {$heading_template}, Include Pricing: " . ($include_pricing_flag ? 'Yes' : 'No'));
+    jfbwqa_write_log("DEBUG: Send Prepared Quote - Subject: {$subject_template}, Heading: {$heading_template}, Include Pricing: " . ($include_pricing_flag ? 'Yes' : 'No') . ", Include Total w/ Tax: " . ($include_total_tax_flag ? 'Yes' : 'No'));
 
     $recipient_email = $order->get_billing_email();
     if ( ! is_email( $recipient_email ) ) {
@@ -514,7 +521,23 @@ function jfbwqa_handle_send_prepared_quote_action( $order, $subject_from_modal =
     // The $body_content_with_html_breaks is the full body, process its placeholders (like [Order Details Table])
     $email_body_final = jfbwqa_replace_email_placeholders( $body_content_with_html_breaks, $order, $include_pricing_flag );
 
-    jfbwqa_write_log("DEBUG: Send Prepared Quote - Final Email Body for order #{$order_id} (length: " . strlen($email_body_final) . "): " . substr($email_body_final, 0, 300) . "...");
+    // NOW, append the processed custom message (which is now the main body) and then totals
+    // The custom message is already part of $body_content_with_html_breaks -> $email_body_final
+
+    // Append Subtotal and Total if flags are set
+    if ($include_pricing_flag) {
+        $subtotal_html = '<table class="td" role="presentation" border="0" cellpadding="6" cellspacing="0" width="100%" style="font-family: \'Helvetica Neue\', Helvetica, Roboto, Arial, sans-serif; margin-top:20px; border-top:1px solid #eee;"><tbody>';
+        $subtotal_html .= '<tr><td scope="row" colspan="2" style="text-align:left; border:none; padding:5px 0;"><strong>' . esc_html__('Subtotal', 'jfb-wc-quotes-advanced') . ':</strong></td><td style="text-align:right; border:none; padding:5px 0;">' . $order->get_subtotal_to_display() . '</td></tr>';
+        
+        if ($include_total_tax_flag) {
+            // You might want to add other totals here too like shipping, tax rows if available and desired
+            $subtotal_html .= '<tr><td scope="row" colspan="2" style="text-align:left; border:none; padding:5px 0;"><strong>' . esc_html__('Total (inc. Tax)', 'jfb-wc-quotes-advanced') . ':</strong></td><td style="text-align:right; border:none; padding:5px 0;">' . $order->get_formatted_order_total() . '</td></tr>';
+        }
+        $subtotal_html .= '</tbody></table>';
+        $email_body_final .= $subtotal_html;
+    }
+
+    jfbwqa_write_log("DEBUG: Send Prepared Quote - Final Email Body for order #{$order_id} (length: " . strlen($email_body_final) . "): " . substr($email_body_final, 0, 500) . "...");
 
     $template_name = 'emails/customer-estimate-request.php'; // Main email wrapper
     $default_plugin_path = jfbwqa_plugin_dir() . 'woocommerce/';
@@ -1478,14 +1501,12 @@ function jfbwqa_ajax_send_quote_handler() {
     $email_reply_to   = isset( $_POST['email_reply_to'] ) ? sanitize_email( stripslashes($_POST['email_reply_to']) ) : '';
     $email_cc         = isset( $_POST['email_cc'] ) ? sanitize_email( stripslashes($_POST['email_cc']) ) : '';
     $include_pricing  = isset( $_POST['include_pricing'] ) && $_POST['include_pricing'] === 'true'; // Boolean
+    $include_total_tax = isset( $_POST['include_total_tax'] ) && $_POST['include_total_tax'] === 'true'; // New flag
 
-    // Only save the 'include_pricing' flag as order meta, as the rest is now fully dynamic for this send.
     update_post_meta( $order_id, '_jfbwqa_quote_include_pricing', $include_pricing ? 'yes' : 'no' );
-    // We might decide not to save the custom message from the modal if it becomes the full body.
-    // For now, let's clear the old custom message meta if it existed, or decide if we need a new one.
-    // update_post_meta( $order_id, '_jfbwqa_quote_custom_message', '' ); // Or save $email_body if desired
+    update_post_meta( $order_id, '_jfbwqa_quote_include_total_tax', $include_total_tax ? 'yes' : 'no' ); // Save new meta
     
-    jfbwqa_write_log("AJAX: Meta for pricing updated for order #{$order_id}. Pricing: " . ($include_pricing ? 'yes' : 'no'));
+    jfbwqa_write_log("AJAX: Meta updated for order #{$order_id}. Pricing: " . ($include_pricing ? 'yes' : 'no') . ", Total w/ Tax: " . ($include_total_tax ? 'yes' : 'no'));
 
     // Pass all components to the handler
     jfbwqa_handle_send_prepared_quote_action(
@@ -1495,7 +1516,8 @@ function jfbwqa_ajax_send_quote_handler() {
         $email_body,
         $email_reply_to,
         $email_cc,
-        $include_pricing
+        $include_pricing,
+        $include_total_tax // Pass new flag
     );
 
     wp_send_json_success( ['message' => __('Prepared Quote Email processing triggered.', 'jfb-wc-quotes-advanced')] );
@@ -1620,7 +1642,10 @@ function jfbwqa_output_quote_modal_html() {
                 </tr>
                 <tr valign="top">
                     <th scope="row"><?php esc_html_e('Options', 'jfb-wc-quotes-advanced'); ?></th>
-                    <td><label><input type="checkbox" id="jfbwqa_include_pricing_modal" name="jfbwqa_include_pricing" value="yes" <?php checked( $include_pricing, 'yes' ); ?> /> <?php esc_html_e('Include Pricing in this Quote', 'jfb-wc-quotes-advanced'); ?></label></td>
+                    <td>
+                        <label style="display:block; margin-bottom:5px;"><input type="checkbox" id="jfbwqa_include_pricing_modal" name="jfbwqa_include_pricing" value="yes" <?php checked( $include_pricing, 'yes' ); ?> /> <?php esc_html_e('Include Pricing in this Quote', 'jfb-wc-quotes-advanced'); ?></label>
+                        <label style="display:block;"><input type="checkbox" id="jfbwqa_include_total_tax_modal" name="jfbwqa_include_total_tax" value="yes" <?php checked( get_post_meta( $order_id, '_jfbwqa_quote_include_total_tax', true ), 'yes' ); ?> /> <?php esc_html_e('Include Grand Total (with Tax)', 'jfb-wc-quotes-advanced'); ?></label>
+                    </td>
                 </tr>
             </table>
 
@@ -1714,6 +1739,7 @@ function jfbwqa_output_quote_modal_html() {
                     var emailReplyTo = document.getElementById('jfbwqa_email_reply_to_modal').value;
                     var emailCc = document.getElementById('jfbwqa_email_cc_modal').value;
                     var includePricing = document.getElementById('jfbwqa_include_pricing_modal').checked;
+                    var includeTotalTax = document.getElementById('jfbwqa_include_total_tax_modal').checked; // New checkbox
 
                     var securityNonce = jfbwqa_metabox_params.send_quote_nonce; 
                     var ajaxUrl = jfbwqa_metabox_params.ajax_url;
@@ -1742,6 +1768,7 @@ function jfbwqa_output_quote_modal_html() {
                     formData.append('email_reply_to', emailReplyTo);
                     formData.append('email_cc', emailCc);
                     formData.append('include_pricing', includePricing ? 'true' : 'false');
+                    formData.append('include_total_tax', includeTotalTax ? 'true' : 'false'); // Send new flag
 
                     console.log('JFBWQA Vanilla: Sending AJAX with FormData:', 
                         Object.fromEntries(formData.entries()) // For logging
