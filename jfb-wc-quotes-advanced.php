@@ -52,7 +52,7 @@ function jfbwqa_get_options() {
         // Defaults for the new Quote Email
         'quote_email_subject'      => 'Your Quote #{order_number} is Ready',
         'quote_email_heading'      => 'Your Prepared Quote',
-        'quote_email_default_body' => "Hello {customer_first_name},\n\nYour quote is ready! Please find the details below:\n\n[Order Details Table]\n\n{additional_message_from_admin}\n\nIf you have any questions, please let us know.\n\nRegards,\n{site_title}"
+        'quote_email_default_body' => "Hello {customer_first_name},\n\nYour quote is ready! Please find the details below:\n\n[Order Details Table]\n\nIf you have any questions, please let us know.\n\nRegards,\n{site_title}" // Removed {additional_message_from_admin}
     ];
     $options = get_option( JFBWQA_OPTION_NAME, [] );
 
@@ -496,19 +496,24 @@ function jfbwqa_handle_send_prepared_quote_action( $order ) {
         '{site_title}' => wp_specialchars_decode(get_bloginfo('name'), ENT_QUOTES),
         '{customer_first_name}' => $order->get_billing_first_name(),
         '{customer_last_name}' => $order->get_billing_last_name(),
-        '{customer_name}' => $order->get_formatted_billing_full_name(),
-        // Add a placeholder for the custom message from the metabox
-        '{additional_message_from_admin}' => wpautop(wptexturize($quote_custom_message))
+        '{customer_name}' => $order->get_formatted_billing_full_name()
+        // REMOVED: '{additional_message_from_admin}' => wpautop(wptexturize($quote_custom_message))
     ];
 
     $subject = str_replace(array_keys($base_replacements), array_values($base_replacements), $subject_template);
     $heading = str_replace(array_keys($base_replacements), array_values($base_replacements), $heading_template);
     
-    // First, replace basic placeholders in the main body template, including the custom message placeholder
+    // First, replace basic placeholders in the main body template
     $email_body_intermediate = str_replace(array_keys($base_replacements), array_values($base_replacements), $body_template);
     
     // Then, process all other placeholders including [Order Details Table] with pricing flag
     $email_body_final = jfbwqa_replace_email_placeholders( $email_body_intermediate, $order, $include_pricing_flag );
+
+    // NOW, append the processed custom message if it exists
+    if ( ! empty( $quote_custom_message ) ) {
+        $email_body_final .= "<hr style='margin: 20px 0; border: none; border-top: 1px solid #eee;' />"; // Optional separator
+        $email_body_final .= wpautop( wptexturize( $quote_custom_message ) );
+    }
 
     jfbwqa_write_log("DEBUG: Send Prepared Quote - Final Email Body for order #{$order_id}: " . $email_body_final);
 
