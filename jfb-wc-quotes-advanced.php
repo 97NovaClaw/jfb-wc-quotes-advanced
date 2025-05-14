@@ -1568,6 +1568,57 @@ function jfbwqa_output_quote_modal_html() {
     </div>
     <?php
     jfbwqa_write_log("DEBUG: jfbwqa_output_quote_modal_html DID RENDER for order ID: {$order_id}");
+    ?>
+    <script type="text/javascript">
+        // Vanilla JS to ensure it runs even if jQuery is affected by earlier errors
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('JFBWQA: DOMContentLoaded, attempting to attach vanilla JS modal handlers.');
+            var openButton = document.getElementById('jfbwqa_open_quote_modal_button');
+            var modal = document.getElementById('jfbwqa-quote-response-modal');
+            var closeButton = document.getElementById('jfbwqa-modal-close');
+            var sendButtonInModal = document.getElementById('jfbwqa_send_quote_button_modal'); // Get this button too
+
+            if (!modal) {
+                console.error('JFBWQA Vanilla: Modal element #jfbwqa-quote-response-modal not found!');
+                return;
+            }
+            if (openButton) {
+                console.log('JFBWQA Vanilla: Open button found.');
+                openButton.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    console.log('JFBWQA Vanilla: Open button clicked!');
+                    modal.style.display = 'block'; // Simple show
+                });
+            } else {
+                console.warn('JFBWQA Vanilla: Open button #jfbwqa_open_quote_modal_button not found.');
+            }
+
+            if (closeButton) {
+                console.log('JFBWQA Vanilla: Close button found.');
+                closeButton.addEventListener('click', function() {
+                    console.log('JFBWQA Vanilla: Close button clicked!');
+                    modal.style.display = 'none'; // Simple hide
+                });
+            }
+            
+            // Also close if clicking on the background overlay
+            modal.addEventListener('click', function(e) {
+                if (e.target === this) {
+                    console.log('JFBWQA Vanilla: Modal background clicked, closing modal.');
+                    modal.style.display = 'none';
+                }
+            });
+
+            if (sendButtonInModal) {
+                 console.log('JFBWQA Vanilla: Send button IN MODAL found. Note: AJAX functionality still relies on jQuery part of admin-order-metabox.js');
+                 // The actual AJAX send logic is still in the jQuery file. 
+                 // This just confirms the button can be found.
+            } else {
+                console.warn('JFBWQA Vanilla: Send button in modal (#jfbwqa_send_quote_button_modal) not found.');
+            }
+        });
+    </script>
+    <?php
 }
 
 ?>
