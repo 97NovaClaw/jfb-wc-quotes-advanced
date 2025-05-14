@@ -18,8 +18,9 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 do_action( 'woocommerce_email_header', $email_heading, $email ); ?>
 
-<?php /* Custom opening paragraph */ ?>
+<?php /* Custom opening paragraph - REMOVED FOR QUOTE EMAIL, handled by body template now
 <p><?php printf( esc_html__( 'Hi %s,', 'jfb-wc-quotes-advanced' ), esc_html( $order->get_billing_first_name() ) ); ?></p>
+*/ ?>
 <?php /* Remove the static text below if it's already in your default body */ ?>
 <?php /* <p><?php esc_html_e( 'Here are the details for your estimate request:', 'jfb-wc-quotes-advanced' ); ?></p> */ ?>
 <?php /* End custom opening */ ?>
@@ -120,7 +121,14 @@ if ( !empty( $additional_content ) ) {
  */
 // This will output the billing address by default.
 // Ensure it's not duplicating what you might already have if $email_body_content contains address details.
-do_action( 'woocommerce_email_customer_details', $order, $sent_to_admin, $plain_text, $email );
+
+// JFBWQA: Conditionally show customer details
+if ( ! isset( $show_customer_details ) || $show_customer_details === true ) {
+    jfbwqa_write_log("DEBUG Email Template: Showing customer_details for order." ); // Ensure $order is available or get ID from it.
+    do_action( 'woocommerce_email_customer_details', $order, $sent_to_admin, $plain_text, $email );
+} else {
+    jfbwqa_write_log("DEBUG Email Template: HIDING customer_details for order." );
+}
 ?>
 
 <?php

@@ -525,7 +525,8 @@ function jfbwqa_handle_send_prepared_quote_action( $order, $subject_from_modal =
            'additional_content' => '', // All content is in $email_body_final now
            'sent_to_admin' => false,
            'plain_text' => false,
-           'email' => $mailer
+           'email' => $mailer,
+           'show_customer_details' => false // Hide for prepared quote email
        ];
     wc_get_template( $template_name, $template_args, 'jfb-wc-quotes-advanced/', $default_plugin_path );
     $email_html_content = ob_get_clean();
@@ -642,7 +643,8 @@ function jfbwqa_handle_order_action( $order ) {
            'additional_content' => wpautop(wptexturize($custom_admin_message)), // Pass the custom message here (rename if you prefer)
            'sent_to_admin' => false,
            'plain_text' => false,
-           'email' => $mailer
+           'email' => $mailer,
+           'show_customer_details' => true // Explicitly show for initial email
        ];
     // *** DEBUG LOGGING START ***
     // Log only essential parts of template_args to avoid memory issues
@@ -1419,6 +1421,32 @@ function jfbwqa_save_prepared_quote_meta( $post_id ) {
     // Sanitize and save "Include Pricing" - store 'yes' or 'no'
     $include_pricing = isset( $_POST['jfbwqa_include_pricing'] ) ? 'yes' : 'no';
     update_post_meta( $post_id, '_jfbwqa_quote_include_pricing', $include_pricing );
+}
+
+/**
+ * Modify the WooCommerce email footer text to remove "Built with WooCommerce" part if present.
+ */
+add_filter( 'woocommerce_email_footer_text', 'jfbwqa_custom_email_footer_text', 20 );
+function jfbwqa_custom_email_footer_text( $footer_text ) {
+    // Default WooCommerce footer text can be "{site_title} &mdash; Built with <a href="https://woocommerce.com">WooCommerce</a>."
+    // We want to keep the {site_title} part but remove the rest if it matches that pattern.
+    $site_title = get_bloginfo( 'name', 'display' );
+    $built_with_woocommerce_string = '&mdash; Built with <a href="https://woocommerce.com">WooCommerce</a>';
+    
+    // Check if the specific string is present
+    if ( strpos( $footer_text, $built_with_woocommerce_string ) !== false ) {
+        // If you want to ONLY show site title, and nothing else from WC settings:
+        // return $site_title;
+        
+        // If you want to remove just the "Built with..." part from the existing WC setting:
+        $footer_text = str_replace( $built_with_woocommerce_string, '', $footer_text );
+        // Trim any trailing spaces or mdash that might be left if the original string was just that.
+        $footer_text = rtrim(trim($footer_text), '&mdash;'); 
+        $footer_text = trim($footer_text);
+        return $footer_text;
+    } 
+    // If the specific string isn't there, return the original footer text from settings
+    return $footer_text;
 }
 
 /**
