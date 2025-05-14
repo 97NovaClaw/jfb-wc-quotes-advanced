@@ -817,7 +817,8 @@ function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = fal
         
         // THEAD
         $full_table_html .= '<thead><tr>';
-        $full_table_html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Product', 'woocommerce' ) . '</th>';
+        // Product header now spans 2 columns (Photo + Name/Details)
+        $full_table_html .= '<th class="td" scope="col" colspan="2" style="' . $th_styles . '">' . esc_html__( 'Product', 'woocommerce' ) . '</th>';
         $full_table_html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Quantity', 'woocommerce' ) . '</th>';
         if ( $show_prices ) {
             $full_table_html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Price', 'woocommerce' ) . '</th>';
@@ -839,8 +840,14 @@ function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = fal
             if ( $totals ) {
                 $full_table_html .= '<tfoot>';
                 foreach ( $totals as $key => $total ) {
+                    $label_colspan = $show_prices ? 3 : 2; // Product(Photo+Name) + Quantity = 3 if price, else Photo + Name = 2
+                    // However, typically the label for totals spans all columns except the value column.
+                    // If Price column is shown, table has 4 cols (Photo, Name, Qty, Price). Label should span 3.
+                    // If Price column is hidden, table has 3 cols (Photo, Name, Qty). Label should span 2.
+                    $current_label_colspan = $show_prices ? 3 : 2;
+
                     $full_table_html .= '<tr>';
-                    $full_table_html .= '<th class="td" scope="row" colspan="2" style="' . $th_styles . 'border-top-width: 4px;">' . esc_html( $total['label'] ) . '</th>';
+                    $full_table_html .= '<th class="td" scope="row" colspan="' . $current_label_colspan . '" style="' . $th_styles . 'border-top-width: 4px;">' . esc_html( $total['label'] ) . '</th>';
                     $full_table_html .= '<td class="td" style="' . $td_styles_totals . 'border-top-width: 4px;">' . wp_kses_post( $total['value'] ) . '</td>';
                     $full_table_html .= '</tr>';
                 }
