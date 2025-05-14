@@ -486,14 +486,14 @@ function jfbwqa_handle_send_prepared_quote_action( $order, $subject_from_modal =
         $include_pricing_flag = get_post_meta( $order_id, '_jfbwqa_quote_include_pricing', true ) === 'yes';
     }
     // Handle the new total_tax flag similarly
-    $include_total_tax_flag = false; // Default to false
+    $final_include_total_tax_flag = false; // Default to false
     if ($include_total_tax_flag_from_modal !== null) {
-        $include_total_tax_flag = $include_total_tax_flag_from_modal;
+        $final_include_total_tax_flag = $include_total_tax_flag_from_modal;
     } else {
-        $include_total_tax_flag = get_post_meta( $order_id, '_jfbwqa_quote_include_total_tax', true ) === 'yes';
+        $final_include_total_tax_flag = get_post_meta( $order_id, '_jfbwqa_quote_include_total_tax', true ) === 'yes';
     }
 
-    jfbwqa_write_log("DEBUG: Send Prepared Quote - Subject: {$subject_template}, Heading: {$heading_template}, Include Pricing: " . ($include_pricing_flag ? 'Yes' : 'No') . ", Include Total w/ Tax: " . ($include_total_tax_flag ? 'Yes' : 'No'));
+    jfbwqa_write_log("DEBUG: Send Prepared Quote - Subject: {$subject_template}, Heading: {$heading_template}, Include Pricing: " . ($include_pricing_flag ? 'Yes' : 'No') . ", Include Total w/ Tax: " . ($final_include_total_tax_flag ? 'Yes' : 'No'));
 
     $recipient_email = $order->get_billing_email();
     if ( ! is_email( $recipient_email ) ) {
@@ -519,7 +519,7 @@ function jfbwqa_handle_send_prepared_quote_action( $order, $subject_from_modal =
     $body_content_with_html_breaks = wpautop( wptexturize( $body_content ) );
 
     // The $body_content_with_html_breaks is the full body, process its placeholders (like [Order Details Table])
-    $email_body_final = jfbwqa_replace_email_placeholders( $body_content_with_html_breaks, $order, $include_pricing_flag );
+    $email_body_final = jfbwqa_replace_email_placeholders( $body_content_with_html_breaks, $order, $include_pricing_flag, $final_include_total_tax_flag );
 
     // NOW, append the processed custom message (which is now the main body) and then totals
     // The custom message is already part of $body_content_with_html_breaks -> $email_body_final
@@ -529,7 +529,7 @@ function jfbwqa_handle_send_prepared_quote_action( $order, $subject_from_modal =
         $subtotal_html = '<table class="td" role="presentation" border="0" cellpadding="6" cellspacing="0" width="100%" style="font-family: \'Helvetica Neue\', Helvetica, Roboto, Arial, sans-serif; margin-top:20px; border-top:1px solid #eee;"><tbody>';
         $subtotal_html .= '<tr><td scope="row" colspan="2" style="text-align:left; border:none; padding:5px 0;"><strong>' . esc_html__('Subtotal', 'jfb-wc-quotes-advanced') . ':</strong></td><td style="text-align:right; border:none; padding:5px 0;">' . $order->get_subtotal_to_display() . '</td></tr>';
         
-        if ($include_total_tax_flag) {
+        if ($final_include_total_tax_flag) {
             // You might want to add other totals here too like shipping, tax rows if available and desired
             $subtotal_html .= '<tr><td scope="row" colspan="2" style="text-align:left; border:none; padding:5px 0;"><strong>' . esc_html__('Total (inc. Tax)', 'jfb-wc-quotes-advanced') . ':</strong></td><td style="text-align:right; border:none; padding:5px 0;">' . $order->get_formatted_order_total() . '</td></tr>';
         }
@@ -747,7 +747,7 @@ function jfbwqa_handle_order_action( $order ) {
 /* =============================================================================
    8) Placeholder Replacement Function (Reads options, uses mapping JSON)
    ============================================================================= */
-function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = false ) { // Added $show_prices argument, default false
+function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = false, $show_grand_total_with_tax = false ) { // Added $show_grand_total_with_tax
     // Add this check for null content
     if ( ! is_string($content) ) {
         jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Initial content is not a string or is null. Order ID: " . ($order instanceof WC_Order ? $order->get_id() : 'N/A') . ". Content Value: " . print_r($content, true));
@@ -839,16 +839,29 @@ function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = fal
             $totals = $order->get_order_item_totals();
             if ( $totals ) {
                 $full_table_html .= '<tfoot>';
-                foreach ( $totals as $key => $total ) {
-                    $label_colspan = $show_prices ? 3 : 2; // Product(Photo+Name) + Quantity = 3 if price, else Photo + Name = 2
-                    // However, typically the label for totals spans all columns except the value column.
-                    // If Price column is shown, table has 4 cols (Photo, Name, Qty, Price). Label should span 3.
-                    // If Price column is hidden, table has 3 cols (Photo, Name, Qty). Label should span 2.
-                    $current_label_colspan = $show_prices ? 3 : 2;
+                foreach ( $totals as $key => $total_data ) {
+                    // Only show 'order_total' if $show_grand_total_with_tax is true
+                    // Always show subtotal if prices are on.
+                    // Other totals (shipping, tax rows) will be shown if WC includes them.
+                    if ($key === 'order_total' && !$show_grand_total_with_tax) {
+                        continue; 
+                    }
+                    // If you want to EXPLICITLY only show subtotal and (conditionally) total, filter here:
+                    // if ( !in_array($key, array('cart_subtotal', 'order_total')) ) continue;
+                    // if ( $key === 'order_total' && !$show_grand_total_with_tax ) continue;
+
+                    $colspan = $show_prices ? 3 : 2; // Photo, Name, Qty = 3 headers before price.
+                                                     // If Price is hidden, Photo, Name = 2 headers before Qty.
+                                                     // The label for totals spans all columns except the value column.
+                                                     // Number of actual data columns in tbody: (image) + name/meta + qty + price (if shown)
+                                                     // So, 4 if prices shown, 3 if not.
+                                                     // Totals label colspan should be this number - 1.
+                    $num_data_cols = 2 + 1 + ($show_prices ? 1 : 0); // Photo col + Name/Meta col + Qty col + (Price col)
+                    $label_colspan = $num_data_cols -1;
 
                     $full_table_html .= '<tr>';
-                    $full_table_html .= '<th class="td" scope="row" colspan="' . $current_label_colspan . '" style="' . $th_styles . 'border-top-width: 4px;">' . esc_html( $total['label'] ) . '</th>';
-                    $full_table_html .= '<td class="td" style="' . $td_styles_totals . 'border-top-width: 4px;">' . wp_kses_post( $total['value'] ) . '</td>';
+                    $full_table_html .= '<th class="td" scope="row" colspan="' . $label_colspan . '" style="' . $th_styles . 'border-top-width: 1px;">' . esc_html( $total_data['label'] ) . '</th>';
+                    $full_table_html .= '<td class="td" style="' . $td_styles_totals . 'border-top-width: 1px;">' . wp_kses_post( $total_data['value'] ) . '</td>';
                     $full_table_html .= '</tr>';
                 }
                 $full_table_html .= '</tfoot>';
