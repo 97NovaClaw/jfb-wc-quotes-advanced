@@ -1568,11 +1568,23 @@ function jfbwqa_output_quote_modal_html() {
     </div>
     <?php
     jfbwqa_write_log("DEBUG: jfbwqa_output_quote_modal_html DID RENDER for order ID: {$order_id}");
+    
+    // Define JS params directly for the inline script
+    $metabox_params = array(
+        'ajax_url' => admin_url( 'admin-ajax.php' ),
+        'send_quote_nonce' => wp_create_nonce( 'jfbwqa_send_quote_nonce' ),
+        'sending_text' => __('Sending...', 'jfb-wc-quotes-advanced'),
+        'error_text' => __('Error. See console or debug log.', 'jfb-wc-quotes-advanced'),
+        // Add any other params your JS might need, e.g., success messages
+        'success_text' => __('Prepared Quote Email processing triggered.', 'jfb-wc-quotes-advanced') 
+    );
     ?>
     <script type="text/javascript">
-        // Vanilla JS to ensure it runs even if jQuery is affected by earlier errors
+        // Make params available to the inline script
+        var jfbwqa_metabox_params = <?php echo wp_json_encode($metabox_params); ?>;
+
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('JFBWQA: DOMContentLoaded, attempting to attach vanilla JS modal handlers.');
+            console.log('JFBWQA: DOMContentLoaded, attempting to attach vanilla JS modal handlers. Params:', jfbwqa_metabox_params);
             var openButton = document.getElementById('jfbwqa_open_quote_modal_button');
             var modal = document.getElementById('jfbwqa-quote-response-modal');
             var closeButton = document.getElementById('jfbwqa-modal-close');
@@ -1659,7 +1671,7 @@ function jfbwqa_output_quote_modal_html() {
                         console.log('JFBWQA Vanilla: AJAX success:', response);
                         if (statusMessageDiv) {
                             if (response.success) {
-                                statusMessageDiv.textContent = response.data.message;
+                                statusMessageDiv.textContent = response.data.message; // Message from PHP
                                 statusMessageDiv.className = 'notice notice-success is-dismissible'; 
                             } else {
                                 var errorMessage = response.data && response.data.message ? response.data.message : jfbwqa_metabox_params.error_text;
