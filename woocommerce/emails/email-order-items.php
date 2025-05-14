@@ -50,29 +50,33 @@ foreach ( $items as $item_id => $item ) :
 	<tr class="<?php echo esc_attr( apply_filters( 'woocommerce_order_item_class', 'order_item', $item, $order ) ); ?>">
 		<td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; word-wrap:break-word; <?php if (!$show_prices) echo 'width: 70%;'; ?>">
 			<?php // JFBWQA: Nested table for image and title/meta alignment ?>
-			<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
-				<tr>
+			<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border:none;">
+				<tr style="border:none;">
 					<?php if ($image_html) : ?>
-						<td width="<?php echo esc_attr($image_size[0] + 10); ?>" style="vertical-align: middle; padding-right: 10px;">
-							<?php echo wp_kses_post( apply_filters( 'woocommerce_order_item_thumbnail', $image_html, $item ) ); ?>
+						<td width="<?php echo esc_attr($image_size[0] + 5); /* Width of image + some padding */ ?>" style="vertical-align: middle; padding:0 5px 0 0; border:none;">
+							<?php echo wp_kses_post( apply_filters( 'woocommerce_order_item_thumbnail', $image_html, $item ) ); /* image_html already has vertical-align:middle */ ?>
 						</td>
 					<?php endif; ?>
-					<td style="vertical-align: middle;">
-						<?php
-						echo wp_kses_post( apply_filters( 'woocommerce_order_item_name', $item->get_name(), $item, false ) );
+					<td style="vertical-align: middle; padding:0; border:none;">
+						<?php 
+						echo wp_kses_post( apply_filters( 'woocommerce_order_item_name', $item->get_name(), $item, false ) ); 
 						if ( $show_sku && $sku ) {
 							echo wp_kses_post( ' (#' . $sku . ')' );
 						}
 						// Meta data
 						do_action( 'woocommerce_order_item_meta_start', $item_id, $item, $order, $plain_text );
-						wc_display_item_meta( $item, array( 'label_before' => '<strong class="wc-item-meta-label" style="float: ' . esc_attr( $text_align ) . '; margin-' . esc_attr( $margin_side ) . ': .25em; clear: both">' ) );
+						wc_display_item_meta( $item, array( 
+							'label_before' => '<strong class="wc-item-meta-label" style="float: ' . esc_attr( $text_align ) . '; margin-' . esc_attr( $margin_side ) . ': .25em; clear: both; font-size:small; display:block;">', 
+							'autop' => true, 
+							'separator' => '<br />' 
+						) );
 						do_action( 'woocommerce_order_item_meta_end', $item_id, $item, $order, $plain_text );
 						?>
 					</td>
 				</tr>
 			</table>
 		</td>
-		<td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; <?php if (!$show_prices) echo 'width: 30%; padding-left:0px;'; else echo 'width:auto;'; /* Adjust width if no price */ ?>">
+		<td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; <?php if (!$show_prices) echo 'width: 30%; padding-left:5px;'; else echo 'width:auto; padding-left:5px;'; ?>">
 			<?php
 			$qty_display = esc_html( $item->get_quantity() );
 			echo wp_kses_post( apply_filters( 'woocommerce_email_order_item_quantity', $qty_display, $item ) );
@@ -80,7 +84,7 @@ foreach ( $items as $item_id => $item ) :
 			?>
 		</td>
         <?php if ( $show_prices ) : ?>
-            <td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif;">
+            <td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; padding-left:5px;">
                 <?php echo wp_kses_post( $order->get_formatted_line_subtotal( $item ) ); ?>
             </td>
         <?php endif; ?>
