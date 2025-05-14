@@ -48,34 +48,38 @@ foreach ( $items as $item_id => $item ) :
 
 	?>
 	<tr class="<?php echo esc_attr( apply_filters( 'woocommerce_order_item_class', 'order_item', $item, $order ) ); ?>">
-		<td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; word-wrap:break-word; <?php if (!$show_prices) echo 'width: 70%;'; /* Give more space if no price */ ?>">
+		<td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; word-wrap:break-word; <?php if (!$show_prices) echo 'width: 70%;'; ?>">
 		<?php
-		echo wp_kses_post( apply_filters( 'woocommerce_order_item_thumbnail', $image_html, $item ) );
+        // JFBWQA: Wrapping image and text in divs for better vertical alignment control
+        if ($image_html) { // Check if there is an image to display
+            echo '<div style="display:inline-block; vertical-align:middle;">' . wp_kses_post( apply_filters( 'woocommerce_order_item_thumbnail', $image_html, $item ) ) . '</div>';
+        }
 
-		// Product name.
-		echo '<span style="vertical-align:middle;">' . wp_kses_post( apply_filters( 'woocommerce_order_item_name', $item->get_name(), $item, false ) ) . '</span>';
+		// Product name. Text will also be vertically aligned due to the parent td's style.
+        // Added a slight left margin if there was an image, to ensure space.
+        echo '<div style="display:inline-block; vertical-align:middle;' . ($image_html ? ' margin-left:10px;' : '') . '">' . wp_kses_post( apply_filters( 'woocommerce_order_item_name', $item->get_name(), $item, false ) );
 
 		// SKU.
 		if ( $show_sku && $sku ) { // $show_sku is passed from $table_args
 			echo wp_kses_post( ' (#' . $sku . ')' );
 		}
+        echo '</div>'; // Close div for product name & sku
 
 		do_action( 'woocommerce_order_item_meta_start', $item_id, $item, $order, $plain_text );
 		wc_display_item_meta( $item, array( 'label_before' => '<strong class="wc-item-meta-label" style="float: ' . esc_attr( $text_align ) . '; margin-' . esc_attr( $margin_side ) . ': .25em; clear: both">' ) );
 		do_action( 'woocommerce_order_item_meta_end', $item_id, $item, $order, $plain_text );
 		?>
 		</td>
-		<td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; <?php if (!$show_prices) echo 'width: 30%;'; /* Adjust width if no price */ ?>">
+		<td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; <?php if (!$show_prices) echo 'width: 30%; padding-left:0px;'; /* Adjust width if no price */ ?>">
 			<?php
 			$qty_display = esc_html( $item->get_quantity() );
-			// Removed refunded qty logic for simplicity in quote context, can be added back if needed.
 			echo wp_kses_post( apply_filters( 'woocommerce_email_order_item_quantity', $qty_display, $item ) );
-            if (!$show_prices) { echo ' (' . esc_html__('Quantity', 'jfb-wc-quotes-advanced') . ')'; }
+            if (!$show_prices) { echo ' <span style="font-style:italic;">(' . esc_html__('Quantity', 'jfb-wc-quotes-advanced') . ')</span>'; }
 			?>
 		</td>
         <?php if ( $show_prices ) : ?>
             <td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif;">
-                <?php echo wp_kses_post( $order->get_formatted_line_subtotal( $item ) ); // This is the line item subtotal (qty x price) ?>
+                <?php echo wp_kses_post( $order->get_formatted_line_subtotal( $item ) ); ?>
             </td>
         <?php endif; ?>
 	</tr>
