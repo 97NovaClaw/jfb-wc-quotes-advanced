@@ -508,8 +508,11 @@ function jfbwqa_handle_send_prepared_quote_action( $order, $subject_from_modal =
     $subject = str_replace(array_keys($base_replacements), array_values($base_replacements), $subject_template);
     $heading = str_replace(array_keys($base_replacements), array_values($base_replacements), $heading_template);
     
-    // The $body_content is the full body (from modal or default settings), process its placeholders
-    $email_body_final = jfbwqa_replace_email_placeholders( $body_content, $order, $include_pricing_flag );
+    // Apply wpautop to the raw body content (from modal or default settings) first
+    $body_content_with_html_breaks = wpautop( wptexturize( $body_content ) );
+
+    // The $body_content_with_html_breaks is the full body, process its placeholders (like [Order Details Table])
+    $email_body_final = jfbwqa_replace_email_placeholders( $body_content_with_html_breaks, $order, $include_pricing_flag );
 
     jfbwqa_write_log("DEBUG: Send Prepared Quote - Final Email Body for order #{$order_id} (length: " . strlen($email_body_final) . "): " . substr($email_body_final, 0, 300) . "...");
 
