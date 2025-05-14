@@ -1587,7 +1587,14 @@ function jfbwqa_output_quote_modal_html() {
                 openButton.addEventListener('click', function(e) {
                     e.preventDefault();
                     console.log('JFBWQA Vanilla: Open button clicked!');
-                    modal.style.display = 'block'; // Simple show
+                    if (modal) {
+                        modal.style.setProperty('display', 'block', 'important');
+                        modal.style.setProperty('visibility', 'visible', 'important');
+                        modal.style.setProperty('opacity', '1', 'important');
+                        console.log('JFBWQA Vanilla: Modal style forcefully set to display:block !important');
+                    } else {
+                        console.error('JFBWQA Vanilla: Modal element not found when trying to show!');
+                    }
                 });
             } else {
                 console.warn('JFBWQA Vanilla: Open button #jfbwqa_open_quote_modal_button not found.');
