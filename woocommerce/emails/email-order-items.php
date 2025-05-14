@@ -49,28 +49,30 @@ foreach ( $items as $item_id => $item ) :
 	?>
 	<tr class="<?php echo esc_attr( apply_filters( 'woocommerce_order_item_class', 'order_item', $item, $order ) ); ?>">
 		<td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; word-wrap:break-word; <?php if (!$show_prices) echo 'width: 70%;'; ?>">
-		<?php
-        // JFBWQA: Wrapping image and text in divs for better vertical alignment control
-        if ($image_html) { // Check if there is an image to display
-            echo '<div style="display:inline-block; vertical-align:middle;">' . wp_kses_post( apply_filters( 'woocommerce_order_item_thumbnail', $image_html, $item ) ) . '</div>';
-        }
-
-		// Product name. Text will also be vertically aligned due to the parent td's style.
-        // Added a slight left margin if there was an image, to ensure space.
-        echo '<div style="display:inline-block; vertical-align:middle;' . ($image_html ? ' margin-left:10px;' : '') . '">' . wp_kses_post( apply_filters( 'woocommerce_order_item_name', $item->get_name(), $item, false ) );
-
-		// SKU.
-		if ( $show_sku && $sku ) { // $show_sku is passed from $table_args
-			echo wp_kses_post( ' (#' . $sku . ')' );
-		}
-        echo '</div>'; // Close div for product name & sku
-
-		do_action( 'woocommerce_order_item_meta_start', $item_id, $item, $order, $plain_text );
-		wc_display_item_meta( $item, array( 'label_before' => '<strong class="wc-item-meta-label" style="float: ' . esc_attr( $text_align ) . '; margin-' . esc_attr( $margin_side ) . ': .25em; clear: both">' ) );
-		do_action( 'woocommerce_order_item_meta_end', $item_id, $item, $order, $plain_text );
-		?>
+			<?php // JFBWQA: Nested table for image and title/meta alignment ?>
+			<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
+				<tr>
+					<?php if ($image_html) : ?>
+						<td width="<?php echo esc_attr($image_size[0] + 10); ?>" style="vertical-align: middle; padding-right: 10px;">
+							<?php echo wp_kses_post( apply_filters( 'woocommerce_order_item_thumbnail', $image_html, $item ) ); ?>
+						</td>
+					<?php endif; ?>
+					<td style="vertical-align: middle;">
+						<?php
+						echo wp_kses_post( apply_filters( 'woocommerce_order_item_name', $item->get_name(), $item, false ) );
+						if ( $show_sku && $sku ) {
+							echo wp_kses_post( ' (#' . $sku . ')' );
+						}
+						// Meta data
+						do_action( 'woocommerce_order_item_meta_start', $item_id, $item, $order, $plain_text );
+						wc_display_item_meta( $item, array( 'label_before' => '<strong class="wc-item-meta-label" style="float: ' . esc_attr( $text_align ) . '; margin-' . esc_attr( $margin_side ) . ': .25em; clear: both">' ) );
+						do_action( 'woocommerce_order_item_meta_end', $item_id, $item, $order, $plain_text );
+						?>
+					</td>
+				</tr>
+			</table>
 		</td>
-		<td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; <?php if (!$show_prices) echo 'width: 30%; padding-left:0px;'; /* Adjust width if no price */ ?>">
+		<td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; <?php if (!$show_prices) echo 'width: 30%; padding-left:0px;'; else echo 'width:auto;'; /* Adjust width if no price */ ?>">
 			<?php
 			$qty_display = esc_html( $item->get_quantity() );
 			echo wp_kses_post( apply_filters( 'woocommerce_email_order_item_quantity', $qty_display, $item ) );
@@ -99,7 +101,9 @@ foreach ( $items as $item_id => $item ) :
 <?php 
 // JFBWQA: Add Order Totals if prices are shown
 if ( $show_prices ) :
+    jfbwqa_write_log("DEBUG Email Items Template: show_prices is true. Attempting to get order item totals for order ID: " . $order->get_id()); // JFBWQA Log
     $item_totals = $order->get_order_item_totals();
+    jfbwqa_write_log("DEBUG Email Items Template: Order item totals raw: " . print_r($item_totals, true)); // JFBWQA Log
     if ( $item_totals ) :
         ?>
         <tfoot>
@@ -111,6 +115,10 @@ if ( $show_prices ) :
             <?php endforeach; ?>
         </tfoot>
         <?php
+    else :
+        jfbwqa_write_log("DEBUG Email Items Template: $order->get_order_item_totals() returned empty or false."); // JFBWQA Log
     endif;
+else :
+    jfbwqa_write_log("DEBUG Email Items Template: show_prices is false. Not showing totals."); // JFBWQA Log
 endif;
 ?> 
