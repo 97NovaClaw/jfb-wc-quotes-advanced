@@ -1617,9 +1617,73 @@ function jfbwqa_output_quote_modal_html() {
             });
 
             if (sendButtonInModal) {
-                 console.log('JFBWQA Vanilla: Send button IN MODAL found. Note: AJAX functionality still relies on jQuery part of admin-order-metabox.js');
-                 // The actual AJAX send logic is still in the jQuery file. 
-                 // This just confirms the button can be found.
+                 console.log('JFBWQA Vanilla: Send button IN MODAL found. Attaching vanilla AJAX handler.');
+                 sendButtonInModal.addEventListener('click', function() {
+                    console.log('JFBWQA Vanilla: Send Email button clicked (vanilla handler).');
+                    var orderId = document.getElementById('post_ID').value;
+                    var customMessage = document.getElementById('jfbwqa_custom_quote_message_modal').value;
+                    var includePricing = document.getElementById('jfbwqa_include_pricing_modal').checked;
+                    var securityNonce = jfbwqa_metabox_params.send_quote_nonce; // Still get nonce from wp_localize_script
+                    var ajaxUrl = jfbwqa_metabox_params.ajax_url;
+
+                    var statusMessageDiv = document.getElementById('jfbwqa_send_status_message_modal');
+                    var spinner = document.getElementById('jfbwqa_spinner_modal');
+                    var originalButtonText = sendButtonInModal.textContent;
+
+                    sendButtonInModal.textContent = jfbwqa_metabox_params.sending_text;
+                    sendButtonInModal.disabled = true;
+                    if(spinner) spinner.classList.add('is-active');
+                    if(statusMessageDiv) {
+                        statusMessageDiv.textContent = '';
+                        statusMessageDiv.style.display = 'none';
+                        statusMessageDiv.className = ''; // Clear previous classes
+                    }
+
+                    var formData = new FormData();
+                    formData.append('action', 'jfbwqa_send_quote_via_metabox');
+                    formData.append('security', securityNonce);
+                    formData.append('order_id', orderId);
+                    formData.append('custom_message', customMessage);
+                    formData.append('include_pricing', includePricing ? 'true' : 'false'); // Send as string 'true'/'false'
+
+                    console.log('JFBWQA Vanilla: Sending AJAX with FormData:', 
+                        Object.fromEntries(formData.entries()) // For logging
+                    );
+
+                    fetch(ajaxUrl, {
+                        method: 'POST',
+                        body: formData
+                    })
+                    .then(response => response.json())
+                    .then(function(response) {
+                        console.log('JFBWQA Vanilla: AJAX success:', response);
+                        if (statusMessageDiv) {
+                            if (response.success) {
+                                statusMessageDiv.textContent = response.data.message;
+                                statusMessageDiv.className = 'notice notice-success is-dismissible'; 
+                            } else {
+                                var errorMessage = response.data && response.data.message ? response.data.message : jfbwqa_metabox_params.error_text;
+                                statusMessageDiv.textContent = errorMessage;
+                                statusMessageDiv.className = 'notice notice-error is-dismissible';
+                            }
+                            statusMessageDiv.style.display = 'block';
+                        }
+                    })
+                    .catch(function(error) {
+                        console.error('JFBWQA Vanilla: AJAX Error:', error);
+                        if (statusMessageDiv) {
+                            statusMessageDiv.textContent = jfbwqa_metabox_params.error_text + ' (Network or server error)';
+                            statusMessageDiv.className = 'notice notice-error is-dismissible';
+                            statusMessageDiv.style.display = 'block';
+                        }
+                    })
+                    .finally(function() {
+                        console.log('JFBWQA Vanilla: AJAX complete.');
+                        sendButtonInModal.textContent = originalButtonText;
+                        sendButtonInModal.disabled = false;
+                        if(spinner) spinner.classList.remove('is-active');
+                    });
+                 });
             } else {
                 console.warn('JFBWQA Vanilla: Send button in modal (#jfbwqa_send_quote_button_modal) not found.');
             }
