@@ -782,12 +782,27 @@ function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = fal
     if ( strpos( $content, $order_details_table_placeholder ) !== false ) {
         jfbwqa_write_log("DEBUG: Found '{$order_details_table_placeholder}' for order #{$order_id_for_log}. Will build full table.");
         
-        // $show_prices is passed as the 3rd argument to this function
-        // $image_size is available from $table_args defined earlier in this function if still needed for headers, but WC defaults usually handle it.
+        $order_items = $order->get_items(); // Get items for the template
 
-        $item_rows_html = wc_get_template_html( 'emails/email-order-items.php', $table_args, '', 
+        // Define $table_args for email-order-items.php template
+        $table_args = array(
+            'order'                 => $order,
+            'items'                 => $order_items,
+            'show_sku'              => false, 
+            'show_image'            => true, // Ensure images are on
+            'image_size'            => array( 64, 64 ), // Keep our desired image size
+            'plain_text'            => false,
+            'sent_to_admin'         => false,
+            'show_purchase_note'    => false, 
+            'show_prices'           => $show_prices // Pass the flag that controls price visibility in our overridden template
+        );
+        jfbwqa_write_log("DEBUG: Table args for email-order-items.php: " . print_r($table_args, true));
+
+        $item_rows_html = wc_get_template_html( 'emails/email-order-items.php', 
+            $table_args, // Pass the defined args
+            '', 
             $show_prices ? '' : jfbwqa_plugin_dir() . 'woocommerce/' 
-        ); // Get just the <tr> rows for items
+        );
 
         if (empty($item_rows_html)) {
             jfbwqa_write_log("WARNING: wc_get_template_html for 'emails/email-order-items.php' returned EMPTY for order #{$order_id_for_log}.");
