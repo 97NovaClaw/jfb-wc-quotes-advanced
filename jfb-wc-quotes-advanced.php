@@ -1554,6 +1554,12 @@ function jfbwqa_output_quote_modal_html() {
     $include_pricing_value = get_post_meta( $order_id, '_jfbwqa_quote_include_pricing', true );
     $include_pricing = ( $include_pricing_value === '' || $include_pricing_value === 'yes' ) ? 'yes' : 'no';
 
+    // Get plugin options for defaults
+    $options = jfbwqa_get_options();
+    jfbwqa_write_log("DEBUG MODAL PREFILL - Options retrieved in jfbwqa_output_quote_modal_html: " . print_r($options, true)); // Log all options
+
+    // Get potentially saved per-order overrides (though we might not save all of these per order)
+
     ?>
     <div id="jfbwqa-quote-response-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background-color:rgba(0,0,0,0.5); z-index:99999; overflow-y: auto;">
         <div style="position:absolute; top:5%; left:50%; transform:translateX(-50%); background-color:#fff; padding:20px; width:90%; max-width:700px; border-radius:5px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); margin-bottom: 50px;">
