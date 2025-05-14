@@ -43,7 +43,15 @@ foreach ( $items as $item_id => $item ) :
 
 		// Show title/image etc.
 		if ( $show_image ) { // $show_image is passed from $table_args
-			echo wp_kses_post( apply_filters( 'woocommerce_order_item_thumbnail', $image, $item ) );
+			// JFBWQA: Add margin to the image
+			$image_html = $product->get_image( $image_size ); // Get image HTML first
+			// Add style directly. This is a bit crude; a filter on $image itself or its attributes would be more elegant for complex changes.
+			if (strpos($image_html, 'style=') !== false) {
+				$image_html = str_replace('style="', 'style="margin-right:10px; ', $image_html);
+			} else {
+				$image_html = str_replace('<img ', '<img style="margin-right:10px;" ', $image_html);
+			}
+			echo wp_kses_post( apply_filters( 'woocommerce_order_item_thumbnail', $image_html, $item ) );
 		}
 
 		// Product name.
@@ -82,18 +90,24 @@ foreach ( $items as $item_id => $item ) :
 			echo wp_kses_post( apply_filters( 'woocommerce_email_order_item_quantity', $qty_display, $item ) );
 			?>
 		</td>
-		<?php /* JFBWQA: Price column commented out for estimates
-		<td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif;">
-			<?php echo wp_kses_post( $order->get_formatted_line_subtotal( $item ) ); ?>
-		</td>
-		*/ ?>
+        <?php // JFBWQA: Conditional Price Column 
+        // The $show_prices variable is extracted from the arguments passed to this template by wc_get_template_html
+        // It originates from jfbwqa_replace_email_placeholders -> $table_args
+        if ( isset($show_prices) && $show_prices === true ) : ?>
+            <td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif;">
+                <?php echo wp_kses_post( $order->get_formatted_line_subtotal( $item ) ); ?>
+            </td>
+        <?php else : ?>
+            <?php /* Price column intentionally left out if $show_prices is false */ ?>
+        <?php endif; ?>
 	</tr>
 	<?php
 
 	if ( $show_purchase_note && $purchase_note ) { // $show_purchase_note is passed from $table_args
 		?>
 		<tr>
-			<td colspan="3" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif;">
+            <?php // JFBWQA: Adjust colspan based on whether price column is shown ?>
+			<td colspan="<?php echo ( isset($show_prices) && $show_prices === true ) ? '3' : '2'; ?>" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif;">
 				<?php
 				echo wp_kses_post( wpautop( do_shortcode( $purchase_note ) ) );
 				?>

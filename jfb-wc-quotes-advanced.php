@@ -764,13 +764,13 @@ function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = fal
         $table_args = array(
             'order'                 => $order,
             'items'                 => $order_items,
-            'show_sku'              => false, // Adjust as needed
-            'show_image'            => true, // ENABLED product images
-            'image_size'            => array( 32, 32 ), // Adjust as needed
+            'show_sku'              => false, 
+            'show_image'            => true, 
+            'image_size'            => array( 64, 64 ), // Increased image size
             'plain_text'            => false,
             'sent_to_admin'         => false,
-            'show_purchase_note'    => false, // Adjust as needed
-            // 'show_prices'        => $show_prices, // Pass this to the template if it supports it directly - WC default doesn't, we control via template choice
+            'show_purchase_note'    => false, 
+            'show_prices'           => $show_prices // Pass our flag through
         );
         jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Args for email-order-items.php (order #{$order_id_for_log}): Order ID = " . $order->get_id() . ", Item count = " . count($order_items) . ", Plain text = false, Show Prices Flag = " . ($show_prices ? 'Yes' : 'No'));
         
