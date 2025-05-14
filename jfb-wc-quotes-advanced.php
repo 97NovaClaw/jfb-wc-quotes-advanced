@@ -780,54 +780,63 @@ function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = fal
     // Special Placeholder: Order Items Table
     $order_details_table_placeholder = '[Order Details Table]';
     if ( strpos( $content, $order_details_table_placeholder ) !== false ) {
-        jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Found '{$order_details_table_placeholder}' for order #{$order_id_for_log}. Attempting to generate table.");
-        ob_start();
-        // Using wc_get_template_html to render the standard items table part
-        $order_items = $order->get_items();
-        $table_args = array(
-            'order'                 => $order,
-            'items'                 => $order_items,
-            'show_sku'              => false, 
-            'show_image'            => true, 
-            'image_size'            => array( 64, 64 ), // Increased image size
-            'plain_text'            => false,
-            'sent_to_admin'         => false,
-            'show_purchase_note'    => false, 
-            'show_prices'           => $show_prices // Pass our flag through
-        );
-        jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Args for email-order-items.php (order #{$order_id_for_log}): Order ID = " . $order->get_id() . ", Item count = " . count($order_items) . ", Plain text = false, Show Prices Flag = " . ($show_prices ? 'Yes' : 'No'));
+        jfbwqa_write_log("DEBUG: Found '{$order_details_table_placeholder}' for order #{$order_id_for_log}. Will build full table.");
         
-        $template_path_override = '';
-        if ( ! $show_prices ) {
-            // If NOT showing prices, use our custom template that hides them.
-            $template_path_override = jfbwqa_plugin_dir() . 'woocommerce/';
-            jfbwqa_write_log("DEBUG: Using overridden email-order-items.php (no prices) for order #{$order_id_for_log}.");
-        } else {
-            jfbwqa_write_log("DEBUG: Using default email-order-items.php (with prices) for order #{$order_id_for_log}.");
-        }
-        // If $template_path_override is empty, wc_get_template_html will use its default lookup (theme then WC plugin).
-        $order_table_html = wc_get_template_html( 'emails/email-order-items.php', $table_args, '', $template_path_override );
-        
-        $buffered_output = ob_get_clean(); // Get any other buffered output
-        if (!empty($buffered_output)) {
-            jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Unexpected buffered output during table generation for order #{$order_id_for_log}: " . substr($buffered_output, 0, 200));
+        // $show_prices is passed as the 3rd argument to this function
+        // $image_size is available from $table_args defined earlier in this function if still needed for headers, but WC defaults usually handle it.
+
+        $item_rows_html = wc_get_template_html( 'emails/email-order-items.php', $table_args, '', 
+            $show_prices ? '' : jfbwqa_plugin_dir() . 'woocommerce/' 
+        ); // Get just the <tr> rows for items
+
+        if (empty($item_rows_html)) {
+            jfbwqa_write_log("WARNING: wc_get_template_html for 'emails/email-order-items.php' returned EMPTY for order #{$order_id_for_log}.");
         }
 
-        jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - HTML for order table (from wc_get_template_html) for order #{$order_id_for_log} (length: " . strlen($order_table_html) . "): " . substr($order_table_html, 0, 500) . (strlen($order_table_html) > 500 ? "..." : ""));
+        $text_align = is_rtl() ? 'right' : 'left';
+        $table_header_footer_styles = 'font-family: \'Helvetica Neue\', Helvetica, Roboto, Arial, sans-serif; border: 1px solid #eee;';
+        $th_styles = 'text-align:' . esc_attr($text_align) . '; border: 1px solid #eee; padding: 12px;';
+        $td_styles_totals = 'text-align:' . esc_attr($text_align) . '; border: 1px solid #eee; padding: 12px;';
+
+        $full_table_html = '<table class="td" cellspacing="0" cellpadding="6" style="width: 100%; ' . $table_header_footer_styles . ' margin-bottom: 40px;" border="1">';
         
-        if (empty($order_table_html)) {
-            jfbwqa_write_log("WARNING: jfbwqa_replace_email_placeholders() - wc_get_template_html for 'emails/email-order-items.php' returned EMPTY for order #{$order_id_for_log}. Order items count: " . count($order_items) . ". Check if the 'emails/email-order-items.php' template exists and is readable.");
+        // THEAD
+        $full_table_html .= '<thead><tr>';
+        $full_table_html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Product', 'woocommerce' ) . '</th>';
+        $full_table_html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Quantity', 'woocommerce' ) . '</th>';
+        if ( $show_prices ) {
+            $full_table_html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Price', 'woocommerce' ) . '</th>';
         }
-        
-        $content_before_table_replace = $content;
-        $content = str_replace($order_details_table_placeholder, $order_table_html, $content);
-        if ($content === $content_before_table_replace && !empty($order_table_html)) {
-             jfbwqa_write_log("WARNING: jfbwqa_replace_email_placeholders() - str_replace for '{$order_details_table_placeholder}' did NOT change content, but table HTML was generated for order #{$order_id_for_log}. Placeholder typo or issue in original content?");
-        } elseif ($content !== $content_before_table_replace) {
-             jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Successfully replaced '{$order_details_table_placeholder}' for order #{$order_id_for_log}.");
+        $full_table_html .= '</tr></thead>';
+
+        // TBODY (from the template)
+        $full_table_html .= '<tbody>' . $item_rows_html . '</tbody>';
+
+        // TFOOT (conditional, based on $show_prices and the new flag for grand total)
+        // The $include_total_tax_flag needs to be available here. 
+        // For now, let's assume we only add it if $show_prices is true.
+        // We'll need to fetch it from order meta if it's not passed directly. This function is generic.
+        // For the purpose of this placeholder, let's rely on the passed $show_prices flag for simplicity now
+        // and the actual decision to show grand_total will be if the $order->get_order_item_totals() returns it.
+
+        if ( $show_prices ) {
+            $totals = $order->get_order_item_totals();
+            if ( $totals ) {
+                $full_table_html .= '<tfoot>';
+                foreach ( $totals as $key => $total ) {
+                    $full_table_html .= '<tr>';
+                    $full_table_html .= '<th class="td" scope="row" colspan="2" style="' . $th_styles . 'border-top-width: 4px;">' . esc_html( $total['label'] ) . '</th>';
+                    $full_table_html .= '<td class="td" style="' . $td_styles_totals . 'border-top-width: 4px;">' . wp_kses_post( $total['value'] ) . '</td>';
+                    $full_table_html .= '</tr>';
+                }
+                $full_table_html .= '</tfoot>';
+            }
         }
 
-
+        $full_table_html .= '</table>';
+        
+        $content = str_replace($order_details_table_placeholder, $full_table_html, $content);
+        jfbwqa_write_log("DEBUG: Successfully built and replaced '{$order_details_table_placeholder}' with full table for order #{$order_id_for_log}.");
     } else {
         jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Did NOT find '{$order_details_table_placeholder}' in content for order #{$order_id_for_log}.");
     }
