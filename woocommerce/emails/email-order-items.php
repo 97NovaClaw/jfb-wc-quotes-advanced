@@ -84,18 +84,33 @@ foreach ( $items as $item_id => $item ) :
         <?php if ( $show_prices && $item->get_quantity() > 0 ) : ?>
             <td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; padding:8px; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; border: 1px solid #eee; width:20%;">
                 <?php 
-                $display_prices_including_tax = get_option('woocommerce_tax_display_cart') === 'incl';
-                $line_total = $display_prices_including_tax 
-                    ? ($item->get_total() + $item->get_total_tax()) 
-                    : $item->get_total();
-                $unit_price = $line_total / $item->get_quantity();
-                echo wc_price($unit_price);
+                // Calculate unit price from order item data (most accurate for what customer actually pays)
+                $quantity = $item->get_quantity();
+                if ( $quantity > 0 ) {
+                    // Use order item total divided by quantity (accounts for discounts, variations, etc.)
+                    $display_prices_including_tax = get_option('woocommerce_tax_display_cart') === 'incl';
+                    if ( $display_prices_including_tax ) {
+                        $line_total_with_tax = $item->get_total() + $item->get_total_tax();
+                        $unit_price = $line_total_with_tax / $quantity;
+                    } else {
+                        $line_total = $item->get_total();
+                        $unit_price = $line_total / $quantity;
+                    }
+                    
+                    // Debug output (remove this after testing)
+                    echo "<!-- DEBUG: Qty: $quantity, Line Total: " . (isset($line_total) ? $line_total : $item->get_total()) . ", Unit: $unit_price -->";
+                    
+                    echo wc_price($unit_price);
+                } else {
+                    echo wc_price(0);
+                }
                 ?>
             </td>
         <?php endif; ?>
         <?php // Column 5: Line Total (Conditional) ?>
         <?php if ( $show_prices ) : ?>
             <td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; padding:8px; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; border: 1px solid #eee; width:25%;">
+                <!-- DEBUG: Line Total Column Rendering -->
                 <?php echo wp_kses_post( $order->get_formatted_line_subtotal( $item ) ); ?>
             </td>
         <?php endif; ?>
