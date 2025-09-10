@@ -80,7 +80,20 @@ foreach ( $items as $item_id => $item ) :
             if (!$show_prices) { echo ' <span style="font-style:italic;">(' . esc_html__('Quantity', 'jfb-wc-quotes-advanced') . ')</span>'; }
 			?>
 		</td>
-        <?php // Column 4: Price (Conditional) ?>
+        <?php // Column 4: Unit Price (New) ?>
+        <?php if ( $show_prices && $item->get_quantity() > 0 ) : ?>
+            <td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; padding:8px; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; border: 1px solid #eee; width:20%;">
+                <?php 
+                $display_prices_including_tax = get_option('woocommerce_tax_display_cart') === 'incl';
+                $line_total = $display_prices_including_tax 
+                    ? ($item->get_total() + $item->get_total_tax()) 
+                    : $item->get_total();
+                $unit_price = $line_total / $item->get_quantity();
+                echo wc_price($unit_price);
+                ?>
+            </td>
+        <?php endif; ?>
+        <?php // Column 5: Line Total (Conditional) ?>
         <?php if ( $show_prices ) : ?>
             <td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; padding:8px; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; border: 1px solid #eee; width:25%;">
                 <?php echo wp_kses_post( $order->get_formatted_line_subtotal( $item ) ); ?>
@@ -91,7 +104,7 @@ foreach ( $items as $item_id => $item ) :
 	if ( $show_purchase_note && $purchase_note ) {
 		?>
 		<tr>
-			<td colspan="<?php echo $show_prices ? '4' : '3'; ?>" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; padding:8px; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; border: 1px solid #eee;">
+			<td colspan="<?php echo $show_prices ? '5' : '3'; ?>" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; padding:8px; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; border: 1px solid #eee;">
 				<?php echo wp_kses_post( wpautop( do_shortcode( $purchase_note ) ) ); ?>
 			</td>
 		</tr>

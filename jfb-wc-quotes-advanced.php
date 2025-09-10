@@ -817,11 +817,13 @@ function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = fal
         
         // THEAD
         $full_table_html .= '<thead><tr>';
-        // Product header now spans 2 columns (Photo + Name/Details)
-        $full_table_html .= '<th class="td" scope="col" colspan="2" style="' . $th_styles . '">' . esc_html__( 'Product', 'woocommerce' ) . '</th>';
+        // Separate headers for Photo and Product (fixes column alignment)
+        $full_table_html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Image', 'woocommerce' ) . '</th>';
+        $full_table_html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Product', 'woocommerce' ) . '</th>';
         $full_table_html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Quantity', 'woocommerce' ) . '</th>';
         if ( $show_prices ) {
-            $full_table_html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Price', 'woocommerce' ) . '</th>';
+            $full_table_html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Unit Price', 'woocommerce' ) . '</th>';
+            $full_table_html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Total', 'woocommerce' ) . '</th>';
         }
         $full_table_html .= '</tr></thead>';
 
@@ -850,13 +852,13 @@ function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = fal
                     // if ( !in_array($key, array('cart_subtotal', 'order_total')) ) continue;
                     // if ( $key === 'order_total' && !$show_grand_total_with_tax ) continue;
 
-                    $colspan = $show_prices ? 3 : 2; // Photo, Name, Qty = 3 headers before price.
+                    $colspan = $show_prices ? 4 : 2; // Photo, Name, Qty, Unit Price = 4 headers before total.
                                                      // If Price is hidden, Photo, Name = 2 headers before Qty.
                                                      // The label for totals spans all columns except the value column.
-                                                     // Number of actual data columns in tbody: (image) + name/meta + qty + price (if shown)
-                                                     // So, 4 if prices shown, 3 if not.
+                                                     // Number of actual data columns in tbody: (image) + name/meta + qty + unit_price + total (if shown)
+                                                     // So, 5 if prices shown, 3 if not.
                                                      // Totals label colspan should be this number - 1.
-                    $num_data_cols = 2 + 1 + ($show_prices ? 1 : 0); // Photo col + Name/Meta col + Qty col + (Price col)
+                    $num_data_cols = 2 + 1 + ($show_prices ? 2 : 0); // Photo col + Name/Meta col + Qty col + (Unit Price col + Total col)
                     $label_colspan = $num_data_cols -1;
 
                     $full_table_html .= '<tr>';
