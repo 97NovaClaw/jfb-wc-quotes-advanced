@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI.
- * Version:     1.18
+ * Version:     1.19
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '1.18' );
+define( 'JFBWQA_VERSION', '1.19' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_SETTINGS_SLUG', 'jfbwqa-settings' ); // Menu slug for settings page
 
@@ -801,7 +801,7 @@ function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = fal
         $item_rows_html = wc_get_template_html( 'emails/email-order-items.php', 
             $table_args, // Pass the defined args
             '', 
-            $show_prices ? '' : jfbwqa_plugin_dir() . 'woocommerce/' 
+            jfbwqa_plugin_dir() . 'woocommerce/' // Always use our custom template
         );
 
         if (empty($item_rows_html)) {
