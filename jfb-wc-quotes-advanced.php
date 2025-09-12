@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI.
- * Version:     1.19
+ * Version:     1.20
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '1.19' );
+define( 'JFBWQA_VERSION', '1.20' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_SETTINGS_SLUG', 'jfbwqa-settings' ); // Menu slug for settings page
 
@@ -199,6 +199,31 @@ function jfbwqa_add_estimate_request_status( $statuses ) {
         $statuses['wc-estimate-request'] = _x('Estimate Request', 'order status', 'jfb-wc-quotes-advanced');
     }
     return $statuses;
+}
+
+// Make Estimate Request status editable like Pending Payment
+add_filter( 'wc_order_is_editable', 'jfbwqa_make_estimate_request_editable', 10, 2 );
+function jfbwqa_make_estimate_request_editable( $is_editable, $order ) {
+    if ( $order->get_status() === 'estimate-request' ) {
+        $is_editable = true;
+    }
+    return $is_editable;
+}
+
+// Add Estimate Request to the list of statuses that allow editing
+add_filter( 'woocommerce_valid_order_statuses_for_payment', 'jfbwqa_add_estimate_to_valid_statuses', 10, 2 );
+function jfbwqa_add_estimate_to_valid_statuses( $statuses, $order ) {
+    $statuses[] = 'estimate-request';
+    return $statuses;
+}
+
+// Ensure line items can be edited for Estimate Request orders
+add_filter( 'woocommerce_order_item_add_action_buttons', 'jfbwqa_enable_item_editing_for_estimates', 10, 1 );
+function jfbwqa_enable_item_editing_for_estimates( $order ) {
+    if ( $order && $order->get_status() === 'estimate-request' ) {
+        // This ensures the order is treated as editable
+        add_filter( 'woocommerce_order_is_editable', '__return_true' );
+    }
 }
 
 /* =============================================================================
