@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI.
- * Version:     1.21
+ * Version:     1.22
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '1.21' );
+define( 'JFBWQA_VERSION', '1.22' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_SETTINGS_SLUG', 'jfbwqa-settings' ); // Menu slug for settings page
 
@@ -1659,7 +1659,7 @@ function jfbwqa_enqueue_order_edit_scripts( $hook ) {
             'jfbwqa-order-metabox-js',
             plugin_dir_url( __FILE__ ) . 'assets/js/admin-order-metabox.js',
             ['jquery'],
-            JFBWQA_VERSION, // Use plugin version for cache busting
+            JFBWQA_VERSION . '-' . time(), // Use plugin version + timestamp for aggressive cache busting
             true
         );
         wp_localize_script( 'jfbwqa-order-metabox-js', 'jfbwqa_metabox_params', array(
@@ -1740,7 +1740,7 @@ function jfbwqa_output_quote_modal_html() {
     ?>
     <div id="jfbwqa-quote-response-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background-color:rgba(0,0,0,0.5); z-index:99999; overflow-y: auto;">
         <div style="position:absolute; top:5%; left:50%; transform:translateX(-50%); background-color:#fff; padding:20px; width:90%; max-width:700px; border-radius:5px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); margin-bottom: 50px;">
-            <h3 style="text-align: center; margin-top:0; margin-bottom: 15px;"><?php esc_html_e('Prepare & Send Estimate Response', 'jfb-wc-quotes-advanced'); ?></h3>
+            <h3 style="text-align: center; margin-top:0; margin-bottom: 15px;"><?php esc_html_e('Prepare & Send Estimate Response', 'jfb-wc-quotes-advanced'); ?> <small style="color: #666; font-size: 12px;">(v<?php echo JFBWQA_VERSION; ?>)</small></h3>
             <button type="button" id="jfbwqa-modal-close" style="position:absolute; top:10px; right:15px; font-size:1.8em; line-height:1; background:none; border:none; cursor:pointer;">&times;</button>
 
             <table class="form-table">
@@ -1806,7 +1806,7 @@ function jfbwqa_output_quote_modal_html() {
         var jfbwqa_metabox_params = <?php echo wp_json_encode($metabox_params); ?>;
 
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('JFBWQA: DOMContentLoaded, attempting to attach vanilla JS modal handlers. Params:', jfbwqa_metabox_params);
+            console.log('JFBWQA: DOMContentLoaded, attempting to attach vanilla JS modal handlers v<?php echo JFBWQA_VERSION; ?>. Params:', jfbwqa_metabox_params);
             var openButton = document.getElementById('jfbwqa_open_quote_modal_button');
             var modal = document.getElementById('jfbwqa-quote-response-modal');
             var closeButton = document.getElementById('jfbwqa-modal-close');
