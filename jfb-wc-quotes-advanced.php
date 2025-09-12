@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI.
- * Version:     1.22
+ * Version:     1.23
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '1.22' );
+define( 'JFBWQA_VERSION', '1.23' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_SETTINGS_SLUG', 'jfbwqa-settings' ); // Menu slug for settings page
 
@@ -1913,26 +1913,28 @@ function jfbwqa_output_quote_modal_html() {
                                 
                                 // Hide all form fields and show success message
                                 if (response.data.close_modal) {
-                                    // Hide all form elements
-                                    var modalContent = document.querySelector('.jfbwqa-modal-content');
-                                    var formElements = modalContent.querySelectorAll('.jfbwqa-modal-field, h2');
-                                    formElements.forEach(function(element) {
-                                        element.style.opacity = '0.3';
-                                        element.style.pointerEvents = 'none';
-                                    });
-                                    
-                                    // Create success message
-                                    var successDiv = document.createElement('div');
-                                    successDiv.style.cssText = 'text-align: center; padding: 40px; font-size: 18px; color: #008000; font-weight: bold;';
-                                    successDiv.textContent = 'Quote sent successfully!';
-                                    modalContent.appendChild(successDiv);
-                                    
-                                    // Auto-close modal after 2 seconds
-                                    setTimeout(function() {
-                                        modal.style.display = 'none';
-                                        // Reload page to show new status
-                                        location.reload();
-                                    }, 2000);
+                                    // Hide all form elements within the modal
+                                    var modalContent = modal.querySelector('div > div'); // The inner content div
+                                    if (modalContent) {
+                                        var formElements = modalContent.querySelectorAll('table, .form-table, button:not(#jfbwqa-modal-close)');
+                                        formElements.forEach(function(element) {
+                                            element.style.opacity = '0.3';
+                                            element.style.pointerEvents = 'none';
+                                        });
+                                        
+                                        // Create success message
+                                        var successDiv = document.createElement('div');
+                                        successDiv.style.cssText = 'text-align: center; padding: 40px; font-size: 18px; color: #008000; font-weight: bold; position: relative; z-index: 10;';
+                                        successDiv.textContent = 'Quote sent successfully!';
+                                        modalContent.appendChild(successDiv);
+                                        
+                                        // Auto-close modal after 2 seconds
+                                        setTimeout(function() {
+                                            modal.style.display = 'none';
+                                            // Reload page to show new status
+                                            location.reload();
+                                        }, 2000);
+                                    }
                                 }
                             } else {
                                 var errorMessage = response.data && response.data.message ? response.data.message : jfbwqa_metabox_params.error_text;
