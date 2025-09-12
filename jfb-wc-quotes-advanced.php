@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI.
- * Version:     1.20
+ * Version:     1.21
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '1.20' );
+define( 'JFBWQA_VERSION', '1.21' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_SETTINGS_SLUG', 'jfbwqa-settings' ); // Menu slug for settings page
 
@@ -54,7 +54,8 @@ function jfbwqa_get_options() {
         'quote_email_heading'      => 'Your Prepared Quote',
         'quote_email_reply_to'   => get_option('admin_email'), // Default for new field
         'quote_email_cc'         => '', // Default for new field
-        'quote_email_default_body' => "Hello {customer_first_name},\n\nYour quote is ready! Please find the details below:\n\n[Order Details Table]\n\nIf you have any questions, please let us know.\n\nRegards,\n{site_title}" // Removed {additional_message_from_admin}
+        'quote_email_default_body' => "Hello {customer_first_name},\n\nYour quote is ready! Please find the details below:\n\n[Order Details Table]\n\nIf you have any questions, please let us know.\n\nRegards,\n{site_title}", // Removed {additional_message_from_admin}
+        'display_discount_in_quote' => false // Default off
     ];
     $options = get_option( JFBWQA_OPTION_NAME, [] );
 
@@ -224,6 +225,35 @@ function jfbwqa_enable_item_editing_for_estimates( $order ) {
         // This ensures the order is treated as editable
         add_filter( 'woocommerce_order_is_editable', '__return_true' );
     }
+}
+
+// Register Quote Sent status
+add_action( 'init', 'jfbwqa_register_quote_sent_status', 1 );
+function jfbwqa_register_quote_sent_status() {
+    if (!function_exists('register_post_status')) return;
+    register_post_status( 'wc-quote-sent', [
+        'label' => _x('Quote Sent','order status','jfb-wc-quotes-advanced'),
+        'public' => true, 'exclude_from_search' => false,
+        'show_in_admin_all_list' => true, 'show_in_admin_status_list' => true,
+        'label_count' => _n_noop('Quote Sent (%s)','Quotes Sent (%s)','jfb-wc-quotes-advanced'),
+    ]);
+    jfbwqa_write_log("Registered status: wc-quote-sent");
+}
+add_filter( 'wc_order_statuses', 'jfbwqa_add_quote_sent_status' );
+function jfbwqa_add_quote_sent_status( $statuses ) {
+    if (!isset($statuses['wc-quote-sent'])) {
+        $statuses['wc-quote-sent'] = _x('Quote Sent', 'order status', 'jfb-wc-quotes-advanced');
+    }
+    return $statuses;
+}
+
+// Make Quote Sent status editable too
+add_filter( 'wc_order_is_editable', 'jfbwqa_make_quote_sent_editable', 10, 2 );
+function jfbwqa_make_quote_sent_editable( $is_editable, $order ) {
+    if ( $order->get_status() === 'quote-sent' ) {
+        $is_editable = true;
+    }
+    return $is_editable;
 }
 
 /* =============================================================================
@@ -617,7 +647,10 @@ function jfbwqa_handle_send_prepared_quote_action( $order, $subject_from_modal =
         $order->add_order_note( $error_msg, false, false );
         jfbwqa_write_log("ERROR: wp_mail() failed for Prepared Quote email, order #{$order_id}. Check mail server.");
         global $phpmailer; if ( isset($phpmailer) && !empty($phpmailer->ErrorInfo) ) jfbwqa_write_log("PHPMailer Error (Prepared Quote): " . $phpmailer->ErrorInfo);
+        return false;
     }
+    
+    return true;
 }
 
 // Original handler for the first email (Estimate Request Confirmation)
@@ -866,6 +899,11 @@ function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = fal
             $totals = $order->get_order_item_totals();
             if ( $totals ) {
                 $full_table_html .= '<tfoot>';
+                
+                // Get the display discount setting
+                $options = jfbwqa_get_options();
+                $display_discount = isset($options['display_discount_in_quote']) ? $options['display_discount_in_quote'] : false;
+                
                 foreach ( $totals as $key => $total_data ) {
                     // Only show 'order_total' if $show_grand_total_with_tax is true
                     // Always show subtotal if prices are on.
@@ -873,6 +911,12 @@ function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = fal
                     if ($key === 'order_total' && !$show_grand_total_with_tax) {
                         continue; 
                     }
+                    
+                    // Skip discount row if setting is off
+                    if ($key === 'discount' && !$display_discount) {
+                        continue;
+                    }
+                    
                     // If you want to EXPLICITLY only show subtotal and (conditionally) total, filter here:
                     // if ( !in_array($key, array('cart_subtotal', 'order_total')) ) continue;
                     // if ( $key === 'order_total' && !$show_grand_total_with_tax ) continue;
@@ -1014,6 +1058,7 @@ function jfbwqa_settings_init() {
     add_settings_field( 'quote_email_reply_to', __('Quote Email Reply-To', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_email_reply_to', 'type' => 'email', 'placeholder' => get_option('admin_email')] );
     add_settings_field( 'quote_email_cc', __('Quote Email CC', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_email_cc', 'type' => 'email', 'placeholder' => 'e.g., sales@example.com'] );
     add_settings_field( 'quote_email_default_body', __('Quote Email Default Body', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_wp_editor', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_email_default_body'] );
+    add_settings_field( 'display_discount_in_quote', __('Display Discount Row in Quote', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'display_discount_in_quote', 'desc' => __('Show discount row in quote emails when discounts are applied', 'jfb-wc-quotes-advanced')] );
 
     // Email Deliverability Section
     add_settings_section(
@@ -1115,6 +1160,7 @@ function jfbwqa_sanitize_options( $input ) {
     $output['quote_email_reply_to'] = sanitize_email($input['quote_email_reply_to'] ?? '');
     $output['quote_email_cc'] = sanitize_email($input['quote_email_cc'] ?? '');
     if (isset($input['quote_email_default_body'])) $output['quote_email_default_body'] = wp_kses_post(wp_unslash($input['quote_email_default_body']));
+    $output['display_discount_in_quote'] = isset($input['display_discount_in_quote']) ? true : false;
 
     jfbwqa_write_log("General plugin settings sanitized.");
     // NOTE: Mapping is saved separately, not via this callback.
@@ -1580,7 +1626,7 @@ function jfbwqa_ajax_send_quote_handler() {
     jfbwqa_write_log("AJAX: Meta updated for order #{$order_id}. Pricing: " . ($include_pricing ? 'yes' : 'no') . ", Total w/ Tax: " . ($include_total_tax ? 'yes' : 'no'));
 
     // Pass all components to the handler
-    jfbwqa_handle_send_prepared_quote_action(
+    $result = jfbwqa_handle_send_prepared_quote_action(
         $order,
         $email_subject,
         $email_heading,
@@ -1591,7 +1637,14 @@ function jfbwqa_ajax_send_quote_handler() {
         $include_total_tax // Pass new flag
     );
 
-    wp_send_json_success( ['message' => __('Prepared Quote Email processing triggered.', 'jfb-wc-quotes-advanced')] );
+    // Check if email was sent successfully
+    if ($result === true) {
+        // Update order status to "Quote Sent"
+        $order->update_status('quote-sent', __('Quote email sent to customer.', 'jfb-wc-quotes-advanced'));
+        wp_send_json_success( ['message' => __('Quote sent successfully!', 'jfb-wc-quotes-advanced'), 'close_modal' => true] );
+    } else {
+        wp_send_json_error( ['message' => __('Failed to send quote email. Please check the logs.', 'jfb-wc-quotes-advanced')] );
+    }
 }
 
 
@@ -1856,12 +1909,37 @@ function jfbwqa_output_quote_modal_html() {
                             if (response.success) {
                                 statusMessageDiv.textContent = response.data.message; // Message from PHP
                                 statusMessageDiv.className = 'notice notice-success is-dismissible'; 
+                                statusMessageDiv.style.display = 'block';
+                                
+                                // Hide all form fields and show success message
+                                if (response.data.close_modal) {
+                                    // Hide all form elements
+                                    var modalContent = document.querySelector('.jfbwqa-modal-content');
+                                    var formElements = modalContent.querySelectorAll('.jfbwqa-modal-field, h2');
+                                    formElements.forEach(function(element) {
+                                        element.style.opacity = '0.3';
+                                        element.style.pointerEvents = 'none';
+                                    });
+                                    
+                                    // Create success message
+                                    var successDiv = document.createElement('div');
+                                    successDiv.style.cssText = 'text-align: center; padding: 40px; font-size: 18px; color: #008000; font-weight: bold;';
+                                    successDiv.textContent = 'Quote sent successfully!';
+                                    modalContent.appendChild(successDiv);
+                                    
+                                    // Auto-close modal after 2 seconds
+                                    setTimeout(function() {
+                                        modal.style.display = 'none';
+                                        // Reload page to show new status
+                                        location.reload();
+                                    }, 2000);
+                                }
                             } else {
                                 var errorMessage = response.data && response.data.message ? response.data.message : jfbwqa_metabox_params.error_text;
                                 statusMessageDiv.textContent = errorMessage;
                                 statusMessageDiv.className = 'notice notice-error is-dismissible';
+                                statusMessageDiv.style.display = 'block';
                             }
-                            statusMessageDiv.style.display = 'block';
                         }
                     })
                     .catch(function(error) {

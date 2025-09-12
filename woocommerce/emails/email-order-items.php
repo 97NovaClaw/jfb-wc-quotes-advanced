@@ -97,8 +97,7 @@ foreach ( $items as $item_id => $item ) :
                         $unit_price = $line_total / $quantity;
                     }
                     
-                    // Debug output (remove this after testing)
-                    echo "<!-- DEBUG: Qty: $quantity, Line Total: " . (isset($line_total) ? $line_total : $item->get_total()) . ", Unit: $unit_price -->";
+                    // Debug output removed - calculations working correctly
                     
                     echo wc_price($unit_price);
                 } else {
@@ -110,7 +109,6 @@ foreach ( $items as $item_id => $item ) :
         <?php // Column 5: Line Total (Conditional) ?>
         <?php if ( $show_prices ) : ?>
             <td class="td" style="text-align:<?php echo esc_attr( $text_align ); ?>; vertical-align:middle; padding:8px; font-family: 'Helvetica Neue', Helvetica, Roboto, Arial, sans-serif; border: 1px solid #eee; width:25%;">
-                <!-- DEBUG: Line Total Column Rendering -->
                 <?php echo wp_kses_post( $order->get_formatted_line_subtotal( $item ) ); ?>
             </td>
         <?php endif; ?>
