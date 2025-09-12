@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI.
- * Version:     1.23
+ * Version:     1.24
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '1.23' );
+define( 'JFBWQA_VERSION', '1.24' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_SETTINGS_SLUG', 'jfbwqa-settings' ); // Menu slug for settings page
 
@@ -513,7 +513,7 @@ add_action( 'woocommerce_order_action_jfbwqa_send_estimate_email', 'jfbwqa_handl
 add_action( 'woocommerce_order_action_jfbwqa_send_prepared_quote', 'jfbwqa_handle_send_prepared_quote_action' ); // Handler now active
 
 // MODIFIED to accept all parts from AJAX or direct call if we add one later
-function jfbwqa_handle_send_prepared_quote_action( $order, $subject_from_modal = null, $heading_from_modal = null, $body_from_modal = null, $reply_to_from_modal = null, $cc_from_modal = null, $include_pricing_flag_from_modal = null, $include_total_tax_flag_from_modal = null ) { // New param
+function jfbwqa_handle_send_prepared_quote_action( $order, $subject_from_modal = null, $heading_from_modal = null, $body_from_modal = null, $reply_to_from_modal = null, $cc_from_modal = null, $include_pricing_flag_from_modal = null, $include_total_tax_flag_from_modal = null, $display_discount_from_modal = null ) { // Added display_discount parameter
     if ( ! is_a( $order, 'WC_Order' ) ) {
         $order_id_val = absint($order);
         $order = wc_get_order($order_id_val);
@@ -574,7 +574,7 @@ function jfbwqa_handle_send_prepared_quote_action( $order, $subject_from_modal =
     $body_content_with_html_breaks = wpautop( wptexturize( $body_content ) );
 
     // The $body_content_with_html_breaks is the full body, process its placeholders (like [Order Details Table])
-    $email_body_final = jfbwqa_replace_email_placeholders( $body_content_with_html_breaks, $order, $include_pricing_flag, $final_include_total_tax_flag );
+    $email_body_final = jfbwqa_replace_email_placeholders( $body_content_with_html_breaks, $order, $include_pricing_flag, $final_include_total_tax_flag, $display_discount_from_modal );
 
     // NOW, append the processed custom message (which is now the main body) and then totals
     // The custom message is already part of $body_content_with_html_breaks -> $email_body_final
@@ -805,7 +805,7 @@ function jfbwqa_handle_order_action( $order ) {
 /* =============================================================================
    8) Placeholder Replacement Function (Reads options, uses mapping JSON)
    ============================================================================= */
-function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = false, $show_grand_total_with_tax = false ) { // Added $show_grand_total_with_tax
+function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = false, $show_grand_total_with_tax = false, $display_discount = null ) { // Added $display_discount parameter
     // Add this check for null content
     if ( ! is_string($content) ) {
         jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Initial content is not a string or is null. Order ID: " . ($order instanceof WC_Order ? $order->get_id() : 'N/A') . ". Content Value: " . print_r($content, true));
@@ -900,9 +900,11 @@ function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = fal
             if ( $totals ) {
                 $full_table_html .= '<tfoot>';
                 
-                // Get the display discount setting
-                $options = jfbwqa_get_options();
-                $display_discount = isset($options['display_discount_in_quote']) ? $options['display_discount_in_quote'] : false;
+                // Get the display discount setting - use parameter if provided, otherwise fall back to global setting
+                if ($display_discount === null) {
+                    $options = jfbwqa_get_options();
+                    $display_discount = isset($options['display_discount_in_quote']) ? $options['display_discount_in_quote'] : false;
+                }
                 
                 foreach ( $totals as $key => $total_data ) {
                     // Only show 'order_total' if $show_grand_total_with_tax is true
@@ -1619,6 +1621,7 @@ function jfbwqa_ajax_send_quote_handler() {
     $email_cc         = isset( $_POST['email_cc'] ) ? sanitize_email( stripslashes($_POST['email_cc']) ) : '';
     $include_pricing  = isset( $_POST['include_pricing'] ) && $_POST['include_pricing'] === 'true'; // Boolean
     $include_total_tax = isset( $_POST['include_total_tax'] ) && $_POST['include_total_tax'] === 'true'; // New flag
+    $display_discount = isset( $_POST['display_discount'] ) && $_POST['display_discount'] === 'true'; // Display discount flag
 
     update_post_meta( $order_id, '_jfbwqa_quote_include_pricing', $include_pricing ? 'yes' : 'no' );
     update_post_meta( $order_id, '_jfbwqa_quote_include_total_tax', $include_total_tax ? 'yes' : 'no' ); // Save new meta
@@ -1634,7 +1637,8 @@ function jfbwqa_ajax_send_quote_handler() {
         $email_reply_to,
         $email_cc,
         $include_pricing,
-        $include_total_tax // Pass new flag
+        $include_total_tax, // Pass new flag
+        $display_discount // Pass display discount flag
     );
 
     // Check if email was sent successfully
@@ -1768,7 +1772,8 @@ function jfbwqa_output_quote_modal_html() {
                     <th scope="row"><?php esc_html_e('Options', 'jfb-wc-quotes-advanced'); ?></th>
                     <td>
                         <label style="display:block; margin-bottom:5px;"><input type="checkbox" id="jfbwqa_include_pricing_modal" name="jfbwqa_include_pricing" value="yes" <?php checked( $include_pricing, 'yes' ); ?> /> <?php esc_html_e('Include Pricing in this Quote', 'jfb-wc-quotes-advanced'); ?></label>
-                        <label style="display:block;"><input type="checkbox" id="jfbwqa_include_total_tax_modal" name="jfbwqa_include_total_tax" value="yes" <?php checked( get_post_meta( $order_id, '_jfbwqa_quote_include_total_tax', true ), 'yes' ); ?> /> <?php esc_html_e('Include Grand Total (with Tax)', 'jfb-wc-quotes-advanced'); ?></label>
+                        <label style="display:block; margin-bottom:5px;"><input type="checkbox" id="jfbwqa_include_total_tax_modal" name="jfbwqa_include_total_tax" value="yes" <?php checked( get_post_meta( $order_id, '_jfbwqa_quote_include_total_tax', true ), 'yes' ); ?> /> <?php esc_html_e('Include Grand Total (with Tax)', 'jfb-wc-quotes-advanced'); ?></label>
+                        <label style="display:block;"><input type="checkbox" id="jfbwqa_display_discount_modal" name="jfbwqa_display_discount" value="yes" <?php checked( isset($options['display_discount_in_quote']) ? $options['display_discount_in_quote'] : false, true ); ?> /> <?php esc_html_e('Display Discount Row in Quote', 'jfb-wc-quotes-advanced'); ?></label>
                     </td>
                 </tr>
             </table>
@@ -1864,6 +1869,7 @@ function jfbwqa_output_quote_modal_html() {
                     var emailCc = document.getElementById('jfbwqa_email_cc_modal').value;
                     var includePricing = document.getElementById('jfbwqa_include_pricing_modal').checked;
                     var includeTotalTax = document.getElementById('jfbwqa_include_total_tax_modal').checked; // New checkbox
+                    var displayDiscount = document.getElementById('jfbwqa_display_discount_modal').checked; // Display discount checkbox
 
                     var securityNonce = jfbwqa_metabox_params.send_quote_nonce; 
                     var ajaxUrl = jfbwqa_metabox_params.ajax_url;
@@ -1893,6 +1899,7 @@ function jfbwqa_output_quote_modal_html() {
                     formData.append('email_cc', emailCc);
                     formData.append('include_pricing', includePricing ? 'true' : 'false');
                     formData.append('include_total_tax', includeTotalTax ? 'true' : 'false'); // Send new flag
+                    formData.append('display_discount', displayDiscount ? 'true' : 'false'); // Send display discount flag
 
                     console.log('JFBWQA Vanilla: Sending AJAX with FormData:', 
                         Object.fromEntries(formData.entries()) // For logging
