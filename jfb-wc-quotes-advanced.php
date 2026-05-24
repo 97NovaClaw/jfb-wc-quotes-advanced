@@ -2,22 +2,101 @@
 /**
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
- * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI.
- * Version:     1.24
+ * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI. HPOS-compatible; creates orders in-process via wc_create_order() (no REST credentials required).
+ * Version:     1.25.0
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
  * Text Domain: jfb-wc-quotes-advanced
  * Domain Path: /languages
+ * Requires Plugins: woocommerce, jetformbuilder
+ * WC requires at least: 7.1
+ * WC tested up to: 10.7
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '1.24' );
+define( 'JFBWQA_VERSION', '1.25.0' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_SETTINGS_SLUG', 'jfbwqa-settings' ); // Menu slug for settings page
+
+/* =============================================================================
+   0) HPOS Compatibility Declaration & Screen Helpers
+   ============================================================================= */
+
+// Declare compatibility with WooCommerce HPOS (Custom Order Tables).
+// Without this, WC marks the plugin as "uncertain" in Settings -> Advanced -> Features.
+add_action( 'before_woocommerce_init', function() {
+    if ( class_exists( '\\Automattic\\WooCommerce\\Utilities\\FeaturesUtil' ) ) {
+        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'custom_order_tables', __FILE__, true );
+        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'cart_checkout_blocks', __FILE__, true );
+    }
+} );
+
+/**
+ * Returns true when WooCommerce HPOS (Custom Orders Table) is the active order store.
+ */
+function jfbwqa_is_hpos_enabled() {
+    return class_exists( '\\Automattic\\WooCommerce\\Utilities\\OrderUtil' )
+        && \Automattic\WooCommerce\Utilities\OrderUtil::custom_orders_table_usage_is_enabled();
+}
+
+/**
+ * Returns the admin screen ID for the order edit page on the active store.
+ * - HPOS: 'woocommerce_page_wc-orders'
+ * - Legacy: 'shop_order'
+ *
+ * Used to register meta boxes against the correct screen.
+ */
+function jfbwqa_get_order_screen_id() {
+    if ( jfbwqa_is_hpos_enabled() && function_exists( 'wc_get_page_screen_id' ) ) {
+        return wc_get_page_screen_id( 'shop-order' );
+    }
+    return 'shop_order';
+}
+
+/**
+ * Resolves the current admin screen to a WC_Order, if applicable.
+ * Handles both legacy (post.php?post=ID) and HPOS (admin.php?page=wc-orders&id=ID&action=edit).
+ * Returns null when not on the order edit screen or when the order can't be loaded.
+ */
+function jfbwqa_get_current_admin_order() {
+    if ( ! is_admin() || ! function_exists( 'get_current_screen' ) ) {
+        return null;
+    }
+    $screen = get_current_screen();
+    if ( ! $screen ) {
+        return null;
+    }
+
+    $order_id = 0;
+
+    // Legacy: post edit screen for shop_order
+    if ( $screen->base === 'post' && $screen->post_type === 'shop_order' ) {
+        $order_id = isset( $_GET['post'] ) ? absint( $_GET['post'] ) : 0;
+        if ( ! $order_id ) {
+            global $post;
+            if ( $post && get_post_type( $post ) === 'shop_order' ) {
+                $order_id = (int) $post->ID;
+            }
+        }
+    }
+
+    // HPOS: woocommerce_page_wc-orders with action=edit&id=N
+    if ( ! $order_id && strpos( $screen->id, 'woocommerce_page_wc-orders' ) !== false ) {
+        if ( isset( $_GET['action'] ) && $_GET['action'] === 'edit' && isset( $_GET['id'] ) ) {
+            $order_id = absint( $_GET['id'] );
+        }
+    }
+
+    if ( ! $order_id ) {
+        return null;
+    }
+
+    return function_exists( 'wc_get_order' ) ? wc_get_order( $order_id ) : null;
+}
 
 /* =============================================================================
    1) Basic Paths & Utility Functions
@@ -38,8 +117,12 @@ function jfbwqa_jetform_path() {
 // --- Get Plugin General Options (Uses WP Options API) ---
 function jfbwqa_get_options() {
     $defaults = [
-        'consumer_key'       => '',
-        'consumer_secret'    => '',
+        // NOTE (v1.25): consumer_key/consumer_secret were removed when the
+        // form handler stopped using the WC REST API self-loopback. Order
+        // creation is now in-process via wc_create_order(); no credentials
+        // are required by this plugin. Old DB values are surfaced via an
+        // admin notice (see jfbwqa_legacy_credentials_notice) and can be
+        // safely deleted from wp_options once acknowledged.
         'hook_name'          => 'my_jfb_wc_estimate_form',
         'shortcode_name'     => 'my_cart_json',
         'jetengine_keys'     => '', // Stored here, used for mapping options & placeholders
@@ -178,7 +261,63 @@ function jfbwqa_write_log( $msg, $force = false ) {
     }
 }
 
-jfbwqa_write_log("Plugin file loaded (v" . JFBWQA_VERSION . " - Admin Settings + Mapping UI).", true);
+// v1.25: removed the unconditional 'Plugin file loaded' log line that
+// previously fired on every request regardless of the enable_debug flag.
+// The plugin now only logs when debug is explicitly enabled in settings.
+jfbwqa_write_log( 'Plugin file loaded (v' . JFBWQA_VERSION . ').' );
+
+/* =============================================================================
+   1.5) One-time admin notice for legacy credentials (post-v1.25 migration)
+   ============================================================================= */
+
+/**
+ * If consumer_key / consumer_secret are still present in wp_options from a
+ * pre-v1.25 install, surface a dismissible admin notice on the JFBWQA settings
+ * page so the admin knows they can be removed and that the plugin no longer
+ * needs them.
+ *
+ * The notice is purely informational; it does not auto-delete the values to
+ * avoid surprising anyone who might be reading them outside this plugin.
+ */
+add_action( 'admin_notices', 'jfbwqa_legacy_credentials_notice' );
+function jfbwqa_legacy_credentials_notice() {
+    if ( ! current_user_can( 'manage_options' ) ) {
+        return;
+    }
+    $screen = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
+    if ( ! $screen || strpos( $screen->id, JFBWQA_SETTINGS_SLUG ) === false ) {
+        return; // Only on our own settings page.
+    }
+    $raw = get_option( JFBWQA_OPTION_NAME, [] );
+    $has_legacy = ! empty( $raw['consumer_key'] ) || ! empty( $raw['consumer_secret'] );
+    if ( ! $has_legacy ) {
+        return;
+    }
+    if ( isset( $_GET['jfbwqa_clear_credentials'] ) && check_admin_referer( 'jfbwqa_clear_credentials' ) ) {
+        unset( $raw['consumer_key'], $raw['consumer_secret'] );
+        update_option( JFBWQA_OPTION_NAME, $raw );
+        echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'Legacy WooCommerce REST API credentials removed from plugin options.', 'jfb-wc-quotes-advanced' ) . '</p></div>';
+        return;
+    }
+    $clear_url = wp_nonce_url(
+        add_query_arg( 'jfbwqa_clear_credentials', '1' ),
+        'jfbwqa_clear_credentials'
+    );
+    ?>
+    <div class="notice notice-warning">
+        <p>
+            <strong><?php esc_html_e( 'JFB WC Quotes Advanced:', 'jfb-wc-quotes-advanced' ); ?></strong>
+            <?php esc_html_e( 'Legacy WooCommerce REST API credentials were detected in this plugin\'s options.', 'jfb-wc-quotes-advanced' ); ?>
+            <?php esc_html_e( 'As of v1.25, orders are created in-process via wc_create_order() and these credentials are no longer used.', 'jfb-wc-quotes-advanced' ); ?>
+            <?php esc_html_e( 'They can be safely removed.', 'jfb-wc-quotes-advanced' ); ?>
+        </p>
+        <p>
+            <a class="button button-secondary" href="<?php echo esc_url( $clear_url ); ?>"><?php esc_html_e( 'Remove legacy credentials', 'jfb-wc-quotes-advanced' ); ?></a>
+            <em><?php esc_html_e( 'Note: this only clears the values from this plugin\'s settings. To revoke the API key itself, go to WooCommerce -> Settings -> Advanced -> REST API.', 'jfb-wc-quotes-advanced' ); ?></em>
+        </p>
+    </div>
+    <?php
+}
 
 /* =============================================================================
    2) Register Custom Order Status "wc-estimate-request" (Unchanged)
@@ -368,134 +507,196 @@ function jfbwqa_init_form_hook() {
     }
 }
 
-// --- Form Submission Handler (Reads options, uses mapping JSON) ---
+// --- Form Submission Handler (uses mapping JSON, creates order in-process) ---
+//
+// v1.25 architecture change:
+// Previously this handler made a self-loopback HTTP call to /wp-json/wc/v3/orders
+// using a stored consumer_key/consumer_secret pair. That required REST credentials
+// to live in wp_options (or, originally, in plugin-config.json) and added an HTTP
+// roundtrip + an authentication surface for no benefit on a single-site install.
+//
+// The handler now creates the order in-process via wc_create_order() and the
+// native WC_Order setters. This:
+//   - removes the credential dependency entirely (settings page no longer asks
+//     for ck_/cs_ keys)
+//   - removes the HTTP roundtrip (~200-1000ms saved per submission)
+//   - is HPOS-safe out of the box (uses CRUD methods, never writes directly to
+//     wp_postmeta for order data)
+//   - preserves the same error semantics for the JFB filter chain (returns
+//     WP_Error on validation failure, returns the original $result on success)
+//
+// The mapping schema (field-mapping.json) is unchanged. Same target tokens
+// (billing.x, shipping.x, *JE_meta*.x, meta_data.x, customer_note,
+// *Cart items list*) work exactly as before.
 function jfbwqa_handle_form_submission( $result, $request, $action_handler ) {
-    jfbwqa_write_log("JFB form submission handling started.");
-    $options = jfbwqa_get_options();
-    $consumer_key = $options['consumer_key'];
-    $consumer_secret = $options['consumer_secret'];
+    jfbwqa_write_log( 'JFB form submission handling started.' );
 
-    if ( empty($consumer_key) || empty($consumer_secret) ) {
-        jfbwqa_write_log("ERROR: WooCommerce API Credentials missing in plugin settings.");
-        return new WP_Error('jfbwqa_config_error', __('Configuration error: WooCommerce API credentials are required.', 'jfb-wc-quotes-advanced'));
+    if ( ! function_exists( 'wc_create_order' ) ) {
+        jfbwqa_write_log( 'ERROR: WooCommerce is not active. Cannot create estimate order.' );
+        return new WP_Error( 'jfbwqa_config_error', __( 'Configuration error: WooCommerce must be active to create estimate orders.', 'jfb-wc-quotes-advanced' ) );
     }
 
     $mapping = jfbwqa_read_mapping(); // Read mapping from field-mapping.json
     if ( empty( $mapping ) ) {
-         jfbwqa_write_log("WARNING: Field mapping (field-mapping.json) is empty. Cannot map fields.");
-         // Optional: Decide if this is fatal
-         // return new WP_Error('jfbwqa_mapping_error', __('Configuration error: Field mapping is not configured.', 'jfb-wc-quotes-advanced'));
+        jfbwqa_write_log( 'WARNING: Field mapping (field-mapping.json) is empty. Cannot map fields.' );
     }
 
-    $order_data_rest = [ /* ... structure ... */
-        'payment_method' => 'bacs', 'payment_method_title' => __('Request a Quote', 'jfb-wc-quotes-advanced'),
-        'status' => 'estimate-request', 'set_paid' => false,
-        'billing' => [], 'shipping' => [], 'meta_data' => [], 'line_items' => [], 'customer_note' => ''
+    // Intermediate buffer that mirrors the previous REST payload shape so
+    // the mapping logic below stays untouched. We translate this buffer
+    // into native WC_Order setter calls right before save().
+    $order_buffer = [
+        'billing'       => [],
+        'shipping'      => [],
+        'meta_data'     => [],
+        'line_items'    => [],
+        'customer_note' => '',
     ];
     $jetengine_meta_to_save = [];
-    $cart_items_json = '';
+    $cart_items_json        = '';
 
     // Process form fields based on mapping from JSON file
     foreach ( $mapping as $jfb_field_id => $wc_targets ) {
-        if ( isset($request[$jfb_field_id]) ) {
-            $jfb_field_value = $request[$jfb_field_id];
-            $sanitized_value = is_array($jfb_field_value) ? array_map('sanitize_text_field', $jfb_field_value) : sanitize_text_field($jfb_field_value);
+        if ( ! isset( $request[ $jfb_field_id ] ) ) {
+            continue;
+        }
+        $jfb_field_value = $request[ $jfb_field_id ];
+        $sanitized_value = is_array( $jfb_field_value )
+            ? array_map( 'sanitize_text_field', $jfb_field_value )
+            : sanitize_text_field( $jfb_field_value );
 
-            foreach ( (array) $wc_targets as $wc_field_key ) {
-                if ( empty($wc_field_key) ) continue;
-                // ... (Mapping logic as in v1.14 - maps to billing, shipping, meta_data, JE meta, cart) ...
-                 if ( $wc_field_key === '*Cart items list*' ) {
-                    if ( is_string($sanitized_value) ) {
-                        $cart_items_json = $sanitized_value;
-                        $order_data_rest['meta_data'][] = ['key' => '_jfbwqa_raw_cart_items_json', 'value' => $cart_items_json];
-                    }
-                } elseif ( strpos($wc_field_key, '*JE_meta*.') === 0 ) {
-                    $meta_key = substr($wc_field_key, strlen('*JE_meta*.'));
-                    if ( ! empty($meta_key) ) $jetengine_meta_to_save[$meta_key] = $sanitized_value;
-                } elseif ( strpos($wc_field_key, 'meta_data.') === 0 ) {
-                    $meta_key = substr($wc_field_key, strlen('meta_data.'));
-                     if ( ! empty($meta_key) ) $order_data_rest['meta_data'][] = ['key' => $meta_key, 'value' => $sanitized_value];
-                } else {
-                    $parts = explode('.', $wc_field_key, 2);
-                    $section = strtolower($parts[0]); $field_key = $parts[1] ?? '';
-                    if ( ($section === 'billing' || $section === 'shipping') && ! empty($field_key) ) {
-                        $order_data_rest[$section][$field_key] = $sanitized_value;
-                    } elseif ( count($parts) === 1 && $section === 'customer_note' ) {
-                         $order_data_rest['customer_note'] = sanitize_textarea_field($jfb_field_value);
-                    }
+        foreach ( (array) $wc_targets as $wc_field_key ) {
+            if ( empty( $wc_field_key ) ) {
+                continue;
+            }
+            if ( $wc_field_key === '*Cart items list*' ) {
+                if ( is_string( $sanitized_value ) ) {
+                    $cart_items_json = $sanitized_value;
+                    $order_buffer['meta_data'][] = [ 'key' => '_jfbwqa_raw_cart_items_json', 'value' => $cart_items_json ];
+                }
+            } elseif ( strpos( $wc_field_key, '*JE_meta*.' ) === 0 ) {
+                $meta_key = substr( $wc_field_key, strlen( '*JE_meta*.' ) );
+                if ( ! empty( $meta_key ) ) {
+                    $jetengine_meta_to_save[ $meta_key ] = $sanitized_value;
+                }
+            } elseif ( strpos( $wc_field_key, 'meta_data.' ) === 0 ) {
+                $meta_key = substr( $wc_field_key, strlen( 'meta_data.' ) );
+                if ( ! empty( $meta_key ) ) {
+                    $order_buffer['meta_data'][] = [ 'key' => $meta_key, 'value' => $sanitized_value ];
+                }
+            } else {
+                $parts     = explode( '.', $wc_field_key, 2 );
+                $section   = strtolower( $parts[0] );
+                $field_key = $parts[1] ?? '';
+                if ( ( $section === 'billing' || $section === 'shipping' ) && ! empty( $field_key ) ) {
+                    $order_buffer[ $section ][ $field_key ] = $sanitized_value;
+                } elseif ( count( $parts ) === 1 && $section === 'customer_note' ) {
+                    // Use textarea sanitizer for free-form messages so newlines survive.
+                    $order_buffer['customer_note'] = sanitize_textarea_field( $jfb_field_value );
                 }
             }
         }
     }
 
-    // Process Cart Items JSON
+    // Process Cart Items JSON into line item descriptors.
     if ( ! empty( $cart_items_json ) ) {
         $decoded_cart = json_decode( $cart_items_json, true );
-        if ( json_last_error() === JSON_ERROR_NONE && is_array($decoded_cart) ) {
+        if ( json_last_error() === JSON_ERROR_NONE && is_array( $decoded_cart ) ) {
             foreach ( $decoded_cart as $item ) {
-                $product_id = absint($item['id'] ?? 0); $quantity = absint($item['qty'] ?? 1);
-                if ( $product_id > 0 && $quantity > 0 ) $order_data_rest['line_items'][] = ['product_id' => $product_id, 'quantity' => $quantity];
+                $product_id = absint( $item['id'] ?? 0 );
+                $quantity   = absint( $item['qty'] ?? 1 );
+                if ( $product_id > 0 && $quantity > 0 ) {
+                    $order_buffer['line_items'][] = [ 'product_id' => $product_id, 'quantity' => $quantity ];
+                }
             }
         } else {
-            jfbwqa_write_log("ERROR: Failed decoding cart items JSON. Error: " . json_last_error_msg());
-            // return new WP_Error('jfbwqa_cart_error', __('Error processing cart items.', 'jfb-wc-quotes-advanced'));
+            jfbwqa_write_log( 'ERROR: Failed decoding cart items JSON. Error: ' . json_last_error_msg() );
         }
     }
 
-    // Validate Essential Data
-    if ( empty($order_data_rest['line_items']) ) return new WP_Error('jfbwqa_items_error', __('Cannot create estimate: No products were included.', 'jfb-wc-quotes-advanced'));
-    if ( empty($order_data_rest['billing']['email']) || !is_email($order_data_rest['billing']['email']) ) return new WP_Error('jfbwqa_billing_error', __('Cannot create estimate: Billing email is required.', 'jfb-wc-quotes-advanced'));
-
-    // --- Call WC REST API ---
-    jfbwqa_write_log("Prepared Order Data (excluding JE meta): " . substr(print_r($order_data_rest, true), 0, 500));
-    $api_endpoint = get_site_url(null, '/wp-json/wc/v3/orders');
-    $auth_header = 'Basic ' . base64_encode( "{$consumer_key}:{$consumer_secret}" );
-    $response = wp_remote_post($api_endpoint, [
-        'method' => 'POST', 'headers' => ['Authorization' => $auth_header, 'Content-Type' => 'application/json'],
-        'body' => wp_json_encode($order_data_rest), 'timeout' => 30
-    ]);
-
-    // --- Handle REST API Response ---
-    if ( is_wp_error( $response ) ) { /* ... error handling ... */
-        $error_message = $response->get_error_message();
-        jfbwqa_write_log("ERROR: WP HTTP API Error: " . $error_message);
-        return new WP_Error('jfbwqa_api_error', __('Error communicating with WooCommerce API.', 'jfb-wc-quotes-advanced') . ' ' . esc_html($error_message));
+    // Validate essential data BEFORE creating the order so we don't leak
+    // half-built orders into wp_wc_orders on validation failure.
+    if ( empty( $order_buffer['line_items'] ) ) {
+        return new WP_Error( 'jfbwqa_items_error', __( 'Cannot create estimate: No products were included.', 'jfb-wc-quotes-advanced' ) );
     }
-    $response_code = wp_remote_retrieve_response_code($response);
-    $response_body = wp_remote_retrieve_body($response);
-    jfbwqa_write_log("WooCommerce API Response Code: {$response_code}");
-    if ( $response_code < 200 || $response_code > 299 ) { /* ... error handling ... */
-        $error_message = "WooCommerce REST API Error ({$response_code})";
-        $decoded_body = json_decode($response_body, true);
-        if ( $decoded_body && isset($decoded_body['message']) ) $error_message .= ': ' . $decoded_body['message'];
-        jfbwqa_write_log("ERROR: " . $error_message);
-        return new WP_Error('jfbwqa_wc_error', __('Error creating order via API.', 'jfb-wc-quotes-advanced') . ' ' . esc_html($error_message));
+    if ( empty( $order_buffer['billing']['email'] ) || ! is_email( $order_buffer['billing']['email'] ) ) {
+        return new WP_Error( 'jfbwqa_billing_error', __( 'Cannot create estimate: Billing email is required.', 'jfb-wc-quotes-advanced' ) );
     }
 
-    // --- Order Created Successfully ---
-    $created_order_data = json_decode($response_body, true);
-    $new_order_id = intval($created_order_data['id'] ?? 0);
-    if ( $new_order_id <= 0 ) return new WP_Error('jfbwqa_id_error', __('Order created, but could not confirm details.', 'jfb-wc-quotes-advanced'));
-    jfbwqa_write_log("SUCCESS: Created WC order #{$new_order_id}.");
+    jfbwqa_write_log( 'Prepared Order Data (in-process): ' . substr( print_r( $order_buffer, true ), 0, 500 ) );
 
-    // --- Save JetEngine Meta via update_post_meta (as before) ---
-    if ( ! empty($jetengine_meta_to_save) ) {
-        jfbwqa_write_log("Saving " . count($jetengine_meta_to_save) . " JE meta fields for Order #{$new_order_id}...");
-        $meta_save_success = true;
-        foreach ( $jetengine_meta_to_save as $meta_key => $meta_value ) {
-            if ( update_post_meta($new_order_id, $meta_key, $meta_value) === false ) {
-                 jfbwqa_write_log("ERROR: update_post_meta failed for Order #{$new_order_id}, Key: '{$meta_key}'.");
-                 $meta_save_success = false;
+    // --- Create the order in-process ---
+    $order = wc_create_order( [ 'created_via' => 'jfb-wc-quotes-advanced' ] );
+    if ( is_wp_error( $order ) ) {
+        $err = $order->get_error_message();
+        jfbwqa_write_log( 'ERROR: wc_create_order() failed: ' . $err );
+        return new WP_Error( 'jfbwqa_create_error', __( 'Error creating estimate order.', 'jfb-wc-quotes-advanced' ) . ' ' . esc_html( $err ) );
+    }
+
+    try {
+        $order->set_payment_method( 'bacs' );
+        $order->set_payment_method_title( __( 'Request a Quote', 'jfb-wc-quotes-advanced' ) );
+
+        if ( ! empty( $order_buffer['billing'] ) ) {
+            $order->set_address( $order_buffer['billing'], 'billing' );
+        }
+        if ( ! empty( $order_buffer['shipping'] ) ) {
+            $order->set_address( $order_buffer['shipping'], 'shipping' );
+        }
+
+        if ( ! empty( $order_buffer['customer_note'] ) ) {
+            $order->set_customer_note( $order_buffer['customer_note'] );
+        }
+
+        // Line items: resolve product, skip silently if missing/unpublished.
+        // (Variations should be passed as their own product IDs from the form;
+        // wc_get_product() handles both products and variations transparently.)
+        foreach ( $order_buffer['line_items'] as $li ) {
+            $product = wc_get_product( $li['product_id'] );
+            if ( ! $product ) {
+                jfbwqa_write_log( "WARNING: Skipping unknown product_id {$li['product_id']} on estimate submission." );
+                continue;
+            }
+            $order->add_product( $product, $li['quantity'] );
+        }
+
+        // Generic order meta (mapped via meta_data.* targets).
+        foreach ( $order_buffer['meta_data'] as $md ) {
+            if ( ! empty( $md['key'] ) ) {
+                $order->update_meta_data( $md['key'], $md['value'] );
             }
         }
-        if (!$meta_save_success) {
-            jfbwqa_write_log("WARNING: One or more JE meta fields failed to save for order #{$new_order_id}.");
-            if ($order = wc_get_order($new_order_id)) $order->add_order_note(__('Warning: Some custom field data may not have saved correctly.', 'jfb-wc-quotes-advanced'));
+
+        // JetEngine meta. Stored on the order via WC_Order::update_meta_data
+        // which is HPOS-safe; do not call update_post_meta() here, it bypasses
+        // the order data store on HPOS sites.
+        foreach ( $jetengine_meta_to_save as $meta_key => $meta_value ) {
+            $order->update_meta_data( $meta_key, $meta_value );
         }
+
+        $order->calculate_totals();
+        // Set status last so transitions don't fire mid-build. set_status()
+        // (vs update_status()) avoids triggering "order created" transactional
+        // emails; the user explicitly fires emails via the order action.
+        $order->set_status( 'estimate-request', __( 'Estimate request submitted via JFB form.', 'jfb-wc-quotes-advanced' ) );
+        $new_order_id = $order->save();
+
+    } catch ( Exception $e ) {
+        jfbwqa_write_log( 'ERROR: Exception while building estimate order: ' . $e->getMessage() );
+        return new WP_Error( 'jfbwqa_create_error', __( 'Error creating estimate order.', 'jfb-wc-quotes-advanced' ) . ' ' . esc_html( $e->getMessage() ) );
     }
 
-    jfbwqa_write_log("Overall JFB submission processing completed successfully for order #{$new_order_id}.");
-    // $result['order_id'] = $new_order_id; // Optionally pass ID back
+    if ( ! $new_order_id || $new_order_id < 1 ) {
+        jfbwqa_write_log( 'ERROR: order->save() returned no order ID.' );
+        return new WP_Error( 'jfbwqa_save_error', __( 'Order built but could not be saved.', 'jfb-wc-quotes-advanced' ) );
+    }
+
+    jfbwqa_write_log( "SUCCESS: Created WC order #{$new_order_id} via wc_create_order()." );
+
+    // Optional: surface the order ID back to JFB action chain so downstream
+    // actions (e.g., redirects, additional emails) can reference it.
+    if ( is_array( $result ) ) {
+        $result['order_id'] = $new_order_id;
+    }
     return $result;
 }
 
@@ -537,15 +738,16 @@ function jfbwqa_handle_send_prepared_quote_action( $order, $subject_from_modal =
     if ($include_pricing_flag_from_modal !== null) {
         $include_pricing_flag = $include_pricing_flag_from_modal; // Directly from AJAX (boolean)
     } else {
-        // Fallback to order meta if action is triggered without AJAX (e.g., manually from order actions dropdown)
-        $include_pricing_flag = get_post_meta( $order_id, '_jfbwqa_quote_include_pricing', true ) === 'yes';
+        // Fallback to order meta if action is triggered without AJAX (e.g., manually from order actions dropdown).
+        // v1.25: read via WC_Order::get_meta() instead of get_post_meta() so it works on HPOS.
+        $include_pricing_flag = $order->get_meta( '_jfbwqa_quote_include_pricing', true ) === 'yes';
     }
     // Handle the new total_tax flag similarly
     $final_include_total_tax_flag = false; // Default to false
     if ($include_total_tax_flag_from_modal !== null) {
         $final_include_total_tax_flag = $include_total_tax_flag_from_modal;
     } else {
-        $final_include_total_tax_flag = get_post_meta( $order_id, '_jfbwqa_quote_include_total_tax', true ) === 'yes';
+        $final_include_total_tax_flag = $order->get_meta( '_jfbwqa_quote_include_total_tax', true ) === 'yes';
     }
 
     jfbwqa_write_log("DEBUG: Send Prepared Quote - Subject: {$subject_template}, Heading: {$heading_template}, Include Pricing: " . ($include_pricing_flag ? 'Yes' : 'No') . ", Include Total w/ Tax: " . ($final_include_total_tax_flag ? 'Yes' : 'No'));
@@ -677,9 +879,8 @@ function jfbwqa_handle_order_action( $order ) {
     jfbwqa_write_log("DEBUG: jfbwqa_handle_order_action() - \$body_template (from settings) BEFORE placeholder replacement for order #{$order_id}: " . $body_template);
     // *** DEBUG LOGGING END ***
 
-    // *** NEW: Get the custom message from order meta ***
-    $custom_admin_message = get_post_meta( $order_id, '_jfbwqa_custom_email_message', true );
-    // *** END NEW ***
+    // Get the custom message from order meta. v1.25: HPOS-safe read.
+    $custom_admin_message = (string) $order->get_meta( '_jfbwqa_custom_email_message', true );
 
     // Get Recipient & Validate
     $recipient_email = $order->get_billing_email();
@@ -1032,9 +1233,7 @@ function jfbwqa_settings_init() {
     );
 
     // General Settings Section
-    add_settings_section('jfbwqa_section_general', __('General Settings', 'jfb-wc-quotes-advanced'), null, JFBWQA_SETTINGS_SLUG);
-    add_settings_field( 'consumer_key', __('WooCommerce Consumer Key', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_general', ['key' => 'consumer_key', 'type' => 'text'] );
-    add_settings_field( 'consumer_secret', __('WooCommerce Consumer Secret', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_general', ['key' => 'consumer_secret', 'type' => 'password'] );
+    add_settings_section('jfbwqa_section_general', __('General Settings', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_section_general_desc', JFBWQA_SETTINGS_SLUG);
     add_settings_field( 'hook_name', __('JetFormBuilder Hook Name', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_general', ['key' => 'hook_name', 'type' => 'text', 'desc' => __('Custom filter hook used in JFB form.', 'jfb-wc-quotes-advanced')] );
     add_settings_field( 'shortcode_name', __('Cart JSON Shortcode Tag', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_general', ['key' => 'shortcode_name', 'type' => 'text', 'desc' => sprintf(__('Tag for shortcode like %s.', 'jfb-wc-quotes-advanced'), '<code>[your_tag_here]</code>')] );
     add_settings_field( 'jetengine_keys', __('JetEngine Meta Keys (for mapping/placeholders)', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_textarea', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_general', ['key' => 'jetengine_keys', 'desc' => __('One key per line. Makes them available as *JE_meta*.key_name in mapping dropdowns and {[key_name]} in emails.', 'jfb-wc-quotes-advanced')] );
@@ -1076,6 +1275,9 @@ function jfbwqa_settings_init() {
         JFBWQA_SETTINGS_SLUG,
         'jfbwqa_section_deliverability'
     );
+}
+function jfbwqa_render_section_general_desc() {
+    echo '<p>' . esc_html__( 'Configure how this plugin integrates with JetFormBuilder. As of v1.25, orders are created in-process via wc_create_order(); no WooCommerce REST API credentials are required.', 'jfb-wc-quotes-advanced' ) . '</p>';
 }
 function jfbwqa_render_section_email_desc() {
      echo '<p>' . esc_html__('Customize the email sent via the order action for the initial estimate request confirmation.', 'jfb-wc-quotes-advanced') . '</p>';
@@ -1143,9 +1345,11 @@ function jfbwqa_render_field_wp_editor( $args ) {
 // --- Sanitization Callback for General Settings ---
 function jfbwqa_sanitize_options( $input ) {
     $output = [];
-    // Sanitize each field registered with Settings API
-    $output['consumer_key']    = sanitize_text_field($input['consumer_key'] ?? '');
-    $output['consumer_secret'] = sanitize_text_field($input['consumer_secret'] ?? ''); // Basic sanitize
+    // NOTE (v1.25): consumer_key/consumer_secret are no longer sanitized here.
+    // The fields were removed from the settings UI when the REST self-loopback
+    // was retired in favor of in-process wc_create_order(). Any legacy values
+    // still present in wp_options are surfaced by jfbwqa_legacy_credentials_notice
+    // and can be safely deleted from there.
     $output['hook_name']       = sanitize_key($input['hook_name'] ?? 'my_jfb_wc_estimate_form');
     $output['shortcode_name']  = sanitize_key($input['shortcode_name'] ?? 'my_cart_json');
     $output['jetengine_keys']  = sanitize_textarea_field($input['jetengine_keys'] ?? '');
@@ -1430,63 +1634,80 @@ function jfbwqa_load_textdomain() {
 }
 
 /**
- * Add Custom Email Message Metabox to Order Edit Screen
+ * Add Custom Email Message Metabox to Order Edit Screen.
+ *
+ * v1.25: Registers against the correct screen for HPOS sites
+ * (woocommerce_page_wc-orders) AND legacy sites (shop_order). Without this,
+ * the meta box silently never renders on HPOS-enabled installs.
  */
 add_action( 'add_meta_boxes', 'jfbwqa_add_custom_email_message_metabox' );
 function jfbwqa_add_custom_email_message_metabox() {
+    $screen_id = jfbwqa_get_order_screen_id();
     add_meta_box(
-        'jfbwqa_custom_email_message',                 // ID
-        __('Custom Estimate Email Message', 'jfb-wc-quotes-advanced'), // Title
-        'jfbwqa_render_custom_email_message_metabox', // Callback function
-        'shop_order',                                  // Post type
-        'side',                                        // Context (normal, side, advanced)
-        'low'                                          // Priority
+        'jfbwqa_custom_email_message',                                  // ID
+        __( 'Custom Estimate Email Message', 'jfb-wc-quotes-advanced' ), // Title
+        'jfbwqa_render_custom_email_message_metabox',                   // Callback
+        $screen_id,                                                     // Screen (HPOS-aware)
+        'side',                                                         // Context
+        'low'                                                           // Priority
     );
 }
 
 /**
- * Render the Custom Email Message Metabox Content
+ * Render the Custom Email Message Metabox Content.
+ *
+ * The first arg here is either a WP_Post (legacy) or a WC_Order (HPOS).
+ * We resolve to a WC_Order for the meta read so storage stays consistent
+ * regardless of which order store the site is using.
  */
-function jfbwqa_render_custom_email_message_metabox( $post ) {
-    // Add nonce for security
+function jfbwqa_render_custom_email_message_metabox( $post_or_order ) {
     wp_nonce_field( 'jfbwqa_save_custom_message_meta', 'jfbwqa_custom_message_nonce' );
 
-    $custom_message = get_post_meta( $post->ID, '_jfbwqa_custom_email_message', true );
+    $order = ( $post_or_order instanceof WC_Order )
+        ? $post_or_order
+        : wc_get_order( $post_or_order instanceof WP_Post ? $post_or_order->ID : 0 );
 
-    echo '<textarea id="jfbwqa_custom_email_textarea" name="jfbwqa_custom_email_message" style="width:100%; height: 150px;" placeholder="' . esc_attr__('Enter an optional custom message to include in the estimate email...', 'jfb-wc-quotes-advanced') . '">' . esc_textarea( $custom_message ) . '</textarea>';
-    echo '<p class="description">' . esc_html__('This message will be included in the email sent via the "Send Estimate Request Email" order action. Leave blank to use only the default template body.', 'jfb-wc-quotes-advanced') . '</p>';
-     // Optional: Add a button to clear the message after sending?
-     // echo '<button type="button" id="jfbwqa_clear_custom_message" class="button button-secondary">' . __('Clear Message', 'jfb-wc-quotes-advanced') . '</button>';
+    $custom_message = $order ? (string) $order->get_meta( '_jfbwqa_custom_email_message', true ) : '';
+
+    echo '<textarea id="jfbwqa_custom_email_textarea" name="jfbwqa_custom_email_message" style="width:100%; height: 150px;" placeholder="' . esc_attr__( 'Enter an optional custom message to include in the estimate email...', 'jfb-wc-quotes-advanced' ) . '">' . esc_textarea( $custom_message ) . '</textarea>';
+    echo '<p class="description">' . esc_html__( 'This message will be included in the email sent via the "Send Estimate Request Email" order action. Leave blank to use only the default template body.', 'jfb-wc-quotes-advanced' ) . '</p>';
 }
 
 /**
- * Save the Custom Email Message Metabox Data
+ * Save the Custom Email Message Metabox Data.
+ *
+ * v1.25:
+ * - Hook switched from 'save_post_shop_order' (legacy-only, never fires on
+ *   HPOS) to 'woocommerce_process_shop_order_meta', which is the canonical
+ *   unified hook that fires on both legacy and HPOS order edit screens.
+ * - Storage switched from update_post_meta() to WC_Order::update_meta_data()
+ *   so the value lands in the correct order store regardless of HPOS state.
+ *
+ * @param int                $order_id Order ID.
+ * @param WC_Order|WP_Post   $order    Order object (HPOS) or post object (legacy).
  */
-add_action( 'save_post_shop_order', 'jfbwqa_save_custom_email_message_meta', 10, 1 );
-function jfbwqa_save_custom_email_message_meta( $post_id ) {
-    // Check nonce
+add_action( 'woocommerce_process_shop_order_meta', 'jfbwqa_save_custom_email_message_meta', 10, 2 );
+function jfbwqa_save_custom_email_message_meta( $order_id, $order = null ) {
     if ( ! isset( $_POST['jfbwqa_custom_message_nonce'] ) || ! wp_verify_nonce( $_POST['jfbwqa_custom_message_nonce'], 'jfbwqa_save_custom_message_meta' ) ) {
-        return $post_id;
+        return;
     }
-
-    // Check user permissions
-    if ( ! current_user_can( 'edit_post', $post_id ) ) {
-        return $post_id;
+    if ( ! current_user_can( 'edit_shop_order', $order_id ) ) {
+        return;
     }
-
-    // Check if it's an autosave
     if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
-        return $post_id;
+        return;
     }
 
-    // Sanitize and save the data
-    $custom_message = isset( $_POST['jfbwqa_custom_email_message'] ) ? wp_kses_post( $_POST['jfbwqa_custom_email_message'] ) : '';
-    update_post_meta( $post_id, '_jfbwqa_custom_email_message', $custom_message );
+    $wc_order = ( $order instanceof WC_Order ) ? $order : wc_get_order( $order_id );
+    if ( ! $wc_order ) {
+        return;
+    }
 
-    // Optional: Clear the message after saving if a flag is set (e.g., by a clear button click)
-    // if (isset($_POST['jfbwqa_clear_message_flag']) && $_POST['jfbwqa_clear_message_flag'] == '1') {
-    //     update_post_meta( $post_id, '_jfbwqa_custom_email_message', '');
-    // }
+    $custom_message = isset( $_POST['jfbwqa_custom_email_message'] )
+        ? wp_kses_post( wp_unslash( $_POST['jfbwqa_custom_email_message'] ) )
+        : '';
+    $wc_order->update_meta_data( '_jfbwqa_custom_email_message', $custom_message );
+    $wc_order->save();
 }
 
 /**
@@ -1540,32 +1761,43 @@ function jfbwqa_render_quote_controls_for_actions( $order ) {
 add_action( 'woocommerce_order_item_add_action_buttons', 'jfbwqa_render_quote_controls_for_actions', 20, 1 );
 
 /**
- * Save Meta Box Data for Sending Prepared Quote
+ * Save Meta Box Data for Sending Prepared Quote.
+ *
+ * v1.25: Same HPOS migration as the custom-email-message saver above.
+ * NOTE: The "prepare quote" UI lives in a modal (not a meta box) and posts
+ * its values via AJAX (see jfbwqa_ajax_send_quote_handler), so this saver
+ * only runs if some other code path manages to surface the form fields on
+ * the order edit screen. It is preserved for back-compat and future use.
+ *
+ * @param int                $order_id Order ID.
+ * @param WC_Order|WP_Post   $order    Order object (HPOS) or post object (legacy).
  */
-add_action( 'save_post_shop_order', 'jfbwqa_save_prepared_quote_meta', 10, 1 );
-function jfbwqa_save_prepared_quote_meta( $post_id ) {
-    // Check nonce
+add_action( 'woocommerce_process_shop_order_meta', 'jfbwqa_save_prepared_quote_meta', 10, 2 );
+function jfbwqa_save_prepared_quote_meta( $order_id, $order = null ) {
     if ( ! isset( $_POST['jfbwqa_quote_meta_nonce'] ) || ! wp_verify_nonce( $_POST['jfbwqa_quote_meta_nonce'], 'jfbwqa_save_quote_meta' ) ) {
-        return $post_id;
+        return;
     }
-
-    // Check user permissions
-    if ( ! current_user_can( 'edit_post', $post_id ) ) {
-        return $post_id;
+    if ( ! current_user_can( 'edit_shop_order', $order_id ) ) {
+        return;
     }
-
-    // Check if it's an autosave
     if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
-        return $post_id;
+        return;
     }
 
-    // Sanitize and save Custom Message
-    $custom_message = isset( $_POST['jfbwqa_custom_quote_message'] ) ? wp_kses_post( $_POST['jfbwqa_custom_quote_message'] ) : '';
-    update_post_meta( $post_id, '_jfbwqa_quote_custom_message', $custom_message );
+    $wc_order = ( $order instanceof WC_Order ) ? $order : wc_get_order( $order_id );
+    if ( ! $wc_order ) {
+        return;
+    }
 
-    // Sanitize and save "Include Pricing" - store 'yes' or 'no'
+    $custom_message = isset( $_POST['jfbwqa_custom_quote_message'] )
+        ? wp_kses_post( wp_unslash( $_POST['jfbwqa_custom_quote_message'] ) )
+        : '';
+    $wc_order->update_meta_data( '_jfbwqa_quote_custom_message', $custom_message );
+
     $include_pricing = isset( $_POST['jfbwqa_include_pricing'] ) ? 'yes' : 'no';
-    update_post_meta( $post_id, '_jfbwqa_quote_include_pricing', $include_pricing );
+    $wc_order->update_meta_data( '_jfbwqa_quote_include_pricing', $include_pricing );
+
+    $wc_order->save();
 }
 
 /**
@@ -1623,10 +1855,12 @@ function jfbwqa_ajax_send_quote_handler() {
     $include_total_tax = isset( $_POST['include_total_tax'] ) && $_POST['include_total_tax'] === 'true'; // New flag
     $display_discount = isset( $_POST['display_discount'] ) && $_POST['display_discount'] === 'true'; // Display discount flag
 
-    update_post_meta( $order_id, '_jfbwqa_quote_include_pricing', $include_pricing ? 'yes' : 'no' );
-    update_post_meta( $order_id, '_jfbwqa_quote_include_total_tax', $include_total_tax ? 'yes' : 'no' ); // Save new meta
-    
-    jfbwqa_write_log("AJAX: Meta updated for order #{$order_id}. Pricing: " . ($include_pricing ? 'yes' : 'no') . ", Total w/ Tax: " . ($include_total_tax ? 'yes' : 'no'));
+    // v1.25: HPOS-safe meta save via WC_Order CRUD instead of update_post_meta().
+    $order->update_meta_data( '_jfbwqa_quote_include_pricing', $include_pricing ? 'yes' : 'no' );
+    $order->update_meta_data( '_jfbwqa_quote_include_total_tax', $include_total_tax ? 'yes' : 'no' );
+    $order->save();
+
+    jfbwqa_write_log( "AJAX: Meta updated for order #{$order_id}. Pricing: " . ( $include_pricing ? 'yes' : 'no' ) . ', Total w/ Tax: ' . ( $include_total_tax ? 'yes' : 'no' ) );
 
     // Pass all components to the handler
     $result = jfbwqa_handle_send_prepared_quote_action(
@@ -1653,93 +1887,76 @@ function jfbwqa_ajax_send_quote_handler() {
 
 
 /**
- * Enqueue admin scripts for the order edit page meta box.
+ * Enqueue admin scripts for the order edit page (legacy or HPOS).
+ *
+ * v1.25: The previous check
+ *     if ( 'post.php' == $hook && 'shop_order' == $post_type )
+ * never matched on HPOS sites because $post_type is not set on the
+ * woocommerce_page_wc-orders screen. The script silently failed to enqueue,
+ * masked only by the fact that the modal logic is also output as inline JS
+ * via admin_print_footer_scripts. Now we use the screen object instead.
+ *
+ * Versioning was previously JFBWQA_VERSION.'-'.time() which broke browser
+ * caching on every request; replaced with plain JFBWQA_VERSION.
  */
 add_action( 'admin_enqueue_scripts', 'jfbwqa_enqueue_order_edit_scripts' );
 function jfbwqa_enqueue_order_edit_scripts( $hook ) {
-    global $post_type;
-    if ( 'post.php' == $hook && 'shop_order' == $post_type ) {
-        wp_enqueue_script(
-            'jfbwqa-order-metabox-js',
-            plugin_dir_url( __FILE__ ) . 'assets/js/admin-order-metabox.js',
-            ['jquery'],
-            JFBWQA_VERSION . '-' . time(), // Use plugin version + timestamp for aggressive cache busting
-            true
-        );
-        wp_localize_script( 'jfbwqa-order-metabox-js', 'jfbwqa_metabox_params', array(
-            'ajax_url' => admin_url( 'admin-ajax.php' ),
-            'send_quote_nonce' => wp_create_nonce( 'jfbwqa_send_quote_nonce' ),
-            'sending_text' => __('Sending...', 'jfb-wc-quotes-advanced'),
-            'error_text' => __('Error. See console or debug log.', 'jfb-wc-quotes-advanced'),
-        ));
+    if ( ! function_exists( 'get_current_screen' ) ) {
+        return;
     }
+    $screen = get_current_screen();
+    if ( ! $screen ) {
+        return;
+    }
+
+    $is_legacy_order = ( $screen->base === 'post' && $screen->post_type === 'shop_order' );
+    $is_hpos_order   = ( strpos( $screen->id, 'woocommerce_page_wc-orders' ) !== false );
+
+    if ( ! $is_legacy_order && ! $is_hpos_order ) {
+        return;
+    }
+
+    wp_enqueue_script(
+        'jfbwqa-order-metabox-js',
+        plugin_dir_url( __FILE__ ) . 'assets/js/admin-order-metabox.js',
+        [ 'jquery' ],
+        JFBWQA_VERSION,
+        true
+    );
+    wp_localize_script( 'jfbwqa-order-metabox-js', 'jfbwqa_metabox_params', [
+        'ajax_url'         => admin_url( 'admin-ajax.php' ),
+        'send_quote_nonce' => wp_create_nonce( 'jfbwqa_send_quote_nonce' ),
+        'sending_text'     => __( 'Sending...', 'jfb-wc-quotes-advanced' ),
+        'error_text'       => __( 'Error. See console or debug log.', 'jfb-wc-quotes-advanced' ),
+    ] );
 }
 
 /**
  * Output HTML for the quote response modal in the admin footer.
+ *
+ * v1.25:
+ * - Uses jfbwqa_get_current_admin_order() (HPOS-aware) to resolve the order
+ *   instead of a manually duplicated screen-detection block.
+ * - Reads per-order meta via WC_Order::get_meta() so storage stays consistent
+ *   on HPOS sites.
+ * - Passes the order_id into the inline JS params so the modal no longer
+ *   depends on a #post_ID DOM input that doesn't exist on the HPOS order
+ *   edit screen.
  */
-// add_action( 'admin_footer-post.php', 'jfbwqa_output_quote_modal_html' ); // Previous hook
-add_action( 'admin_print_footer_scripts', 'jfbwqa_output_quote_modal_html', 99 ); // New hook, late priority
+add_action( 'admin_print_footer_scripts', 'jfbwqa_output_quote_modal_html', 99 );
 
 function jfbwqa_output_quote_modal_html() {
-    jfbwqa_write_log("DEBUG: jfbwqa_output_quote_modal_html - Function CALLED.");
-
-    $screen = get_current_screen();
-    
-    if ( ! $screen ) {
-        jfbwqa_write_log("DEBUG: Modal HTML not rendered: get_current_screen() returned null.");
+    $order = jfbwqa_get_current_admin_order();
+    if ( ! $order ) {
         return;
     }
+    $order_id = $order->get_id();
 
-    jfbwqa_write_log("DEBUG: Modal HTML - Screen ID: " . ($screen->id ?? 'N/A') . ", Screen Post Type: " . ($screen->post_type ?? 'N/A') . ", Screen Base: " . ($screen->base ?? 'N/A'));
+    $include_pricing_value = (string) $order->get_meta( '_jfbwqa_quote_include_pricing', true );
+    $include_pricing       = ( $include_pricing_value === '' || $include_pricing_value === 'yes' ) ? 'yes' : 'no';
+    $include_total_tax     = (string) $order->get_meta( '_jfbwqa_quote_include_total_tax', true );
 
-    $is_order_edit_screen = false;
-    $order_id = 0;
-
-    // Check for traditional post edit screen for a shop_order
-    if ( $screen->post_type === 'shop_order' && $screen->base === 'post' ) {
-        if (isset($_GET['post'])) {
-            $order_id = absint($_GET['post']);
-            if ($order_id > 0) $is_order_edit_screen = true;
-        } else {
-            global $post;
-            if ($post && isset($post->ID) && get_post_type($post->ID) === 'shop_order'){
-                $order_id = $post->ID;
-                if ($order_id > 0) $is_order_edit_screen = true;
-            }
-        }
-    }
-    
-    // Check for HPOS / new WooCommerce admin order edit screen
-    // The screen ID might be like 'woocommerce_page_wc-orders' and action='edit' with an 'id' URL parameter
-    if ( !$is_order_edit_screen && strpos($screen->id, 'woocommerce_page_wc-orders') !== false ) {
-        if (isset($_GET['action']) && $_GET['action'] === 'edit' && isset($_GET['id'])) {
-            $order_id = absint($_GET['id']);
-            if ($order_id > 0) $is_order_edit_screen = true;
-        }
-    }
-
-    if ( !$is_order_edit_screen ) {
-        jfbwqa_write_log("DEBUG: Modal HTML not rendered: Not identified as a single order edit screen. Order ID derived: {$order_id}");
-        return; 
-    }
-    
-    if ( $order_id === 0 ) {
-        jfbwqa_write_log("DEBUG: Modal HTML not rendered: Order ID resolved to 0 after checks.");
-        return;
-    }
-
-    jfbwqa_write_log("DEBUG: jfbwqa_output_quote_modal_html IS ATTEMPTING to render for order ID: {$order_id} on screen ID: {$screen->id}");
-
-    $custom_message = get_post_meta( $order_id, '_jfbwqa_quote_custom_message', true );
-    $include_pricing_value = get_post_meta( $order_id, '_jfbwqa_quote_include_pricing', true );
-    $include_pricing = ( $include_pricing_value === '' || $include_pricing_value === 'yes' ) ? 'yes' : 'no';
-
-    // Get plugin options for defaults
     $options = jfbwqa_get_options();
-    jfbwqa_write_log("DEBUG MODAL PREFILL - Options retrieved in jfbwqa_output_quote_modal_html: " . print_r($options, true)); // Log all options
-
-    // Get potentially saved per-order overrides (though we might not save all of these per order)
 
     ?>
     <div id="jfbwqa-quote-response-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background-color:rgba(0,0,0,0.5); z-index:99999; overflow-y: auto;">
@@ -1772,7 +1989,7 @@ function jfbwqa_output_quote_modal_html() {
                     <th scope="row"><?php esc_html_e('Options', 'jfb-wc-quotes-advanced'); ?></th>
                     <td>
                         <label style="display:block; margin-bottom:5px;"><input type="checkbox" id="jfbwqa_include_pricing_modal" name="jfbwqa_include_pricing" value="yes" <?php checked( $include_pricing, 'yes' ); ?> /> <?php esc_html_e('Include Pricing in this Quote', 'jfb-wc-quotes-advanced'); ?></label>
-                        <label style="display:block; margin-bottom:5px;"><input type="checkbox" id="jfbwqa_include_total_tax_modal" name="jfbwqa_include_total_tax" value="yes" <?php checked( get_post_meta( $order_id, '_jfbwqa_quote_include_total_tax', true ), 'yes' ); ?> /> <?php esc_html_e('Include Grand Total (with Tax)', 'jfb-wc-quotes-advanced'); ?></label>
+                        <label style="display:block; margin-bottom:5px;"><input type="checkbox" id="jfbwqa_include_total_tax_modal" name="jfbwqa_include_total_tax" value="yes" <?php checked( $include_total_tax, 'yes' ); ?> /> <?php esc_html_e('Include Grand Total (with Tax)', 'jfb-wc-quotes-advanced'); ?></label>
                         <label style="display:block;"><input type="checkbox" id="jfbwqa_display_discount_modal" name="jfbwqa_display_discount" value="yes" <?php checked( isset($options['display_discount_in_quote']) ? $options['display_discount_in_quote'] : false, true ); ?> /> <?php esc_html_e('Display Discount Row in Quote', 'jfb-wc-quotes-advanced'); ?></label>
                     </td>
                 </tr>
@@ -1794,17 +2011,17 @@ function jfbwqa_output_quote_modal_html() {
         </div>
     </div>
     <?php
-    jfbwqa_write_log("DEBUG: jfbwqa_output_quote_modal_html DID RENDER for order ID: {$order_id}");
-    
-    // Define JS params directly for the inline script
-    $metabox_params = array(
-        'ajax_url' => admin_url( 'admin-ajax.php' ),
+    // Pass the resolved order_id explicitly so the inline JS doesn't depend
+    // on a #post_ID input (which only exists on the legacy post.php screen,
+    // not on the HPOS woocommerce_page_wc-orders screen).
+    $metabox_params = [
+        'ajax_url'         => admin_url( 'admin-ajax.php' ),
         'send_quote_nonce' => wp_create_nonce( 'jfbwqa_send_quote_nonce' ),
-        'sending_text' => __('Sending...', 'jfb-wc-quotes-advanced'),
-        'error_text' => __('Error. See console or debug log.', 'jfb-wc-quotes-advanced'),
-        // Add any other params your JS might need, e.g., success messages
-        'success_text' => __('Prepared Quote Email processing triggered.', 'jfb-wc-quotes-advanced') 
-    );
+        'order_id'         => (int) $order_id,
+        'sending_text'     => __( 'Sending...', 'jfb-wc-quotes-advanced' ),
+        'error_text'       => __( 'Error. See console or debug log.', 'jfb-wc-quotes-advanced' ),
+        'success_text'     => __( 'Prepared Quote Email processing triggered.', 'jfb-wc-quotes-advanced' ),
+    ];
     ?>
     <script type="text/javascript">
         // Make params available to the inline script
@@ -1859,7 +2076,9 @@ function jfbwqa_output_quote_modal_html() {
                  console.log('JFBWQA Vanilla: Send button IN MODAL found. Attaching vanilla AJAX handler.');
                  sendButtonInModal.addEventListener('click', function() {
                     console.log('JFBWQA Vanilla: Send Email button clicked (vanilla handler).');
-                    var orderId = document.getElementById('post_ID').value;
+                    // v1.25: Read order ID from server-passed params instead of #post_ID
+                    // (the legacy post-edit input doesn't exist on HPOS order screens).
+                    var orderId = jfbwqa_metabox_params.order_id || (document.getElementById('post_ID') ? document.getElementById('post_ID').value : 0);
                     
                     // Get all values from modal fields
                     var emailSubject = document.getElementById('jfbwqa_email_subject_modal').value;
