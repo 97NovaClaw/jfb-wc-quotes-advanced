@@ -4,6 +4,82 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [1.27.0] - 2026-05-24
+
+### Added
+- **Two new settings sections** for the [Order Details Table] placeholder
+  rendering, one per email type:
+  - `Estimate Request Email - Order Details Table` (9 toggles, all
+    OFF by default - the acknowledgement email stays free of pricing
+    info unless the admin opts in)
+  - `Prepared Quote Email - Order Details Table` (9 toggles, mostly
+    ON by default - a prepared quote should include pricing)
+  - Toggles: show product images, unit price column, line total
+    column, subtotal row, shipping rows, fee rows, discount row,
+    tax row, grand total row.
+- **Fees and shipping render as table-body rows** (when their toggle
+  is on) instead of only appearing in the totals footer. Each fee
+  becomes its own line in the items table prefixed with "Fee:" in
+  italics; each shipping method does the same with "Shipping:".
+- New helper functions exposing the new rendering primitives so
+  follow-up commits (v1.28 modal rebuild) can reuse them:
+  - `jfbwqa_default_table_config()`
+  - `jfbwqa_get_table_config_from_settings( 'estimate' | 'quote' )`
+  - `jfbwqa_normalize_legacy_table_args( $show_prices, $show_grand, $disc )`
+  - `jfbwqa_render_order_details_table( $order, $config )`
+  - `jfbwqa_render_fee_rows_html( $order, $config )`
+  - `jfbwqa_render_shipping_rows_html( $order, $config )`
+  - `jfbwqa_render_synthetic_row_html( $name, $qty, $total, $cfg, $prefix )`
+
+### Changed
+- `jfbwqa_replace_email_placeholders()` 3rd argument now accepts an
+  array (the new table_config dict) OR the legacy boolean shape
+  (`$show_prices`, `$show_grand_total_with_tax`, `$display_discount`).
+  Callers using the old positional signature still produce identical
+  output; their values are translated via
+  `jfbwqa_normalize_legacy_table_args()`.
+- `jfbwqa_handle_order_action()` (Estimate Request order action) now
+  reads the new estimate-side settings and passes the resolved config.
+  Previously it called the placeholder replacer with no args, which
+  meant fees, shipping, subtotal, and grand total could never appear
+  even when present on the order.
+- `jfbwqa_handle_send_prepared_quote_action()` (Prepared Quote AJAX
+  send) now reads the new quote-side settings and overlays the modal
+  checkboxes (Include Pricing / Grand Total w/ Tax / Display Discount)
+  on top. Net effect: settings provide the defaults; modal still wins
+  per-send. The legacy "subtotal/total appendix" block (a separate
+  unstyled table appended after the body) was removed - that
+  responsibility now lives entirely in the table footer, gated by the
+  config.
+- `woocommerce/emails/email-order-items.php` template updated to read
+  `$jfbwqa_config` (new) instead of `$show_prices` (legacy). Image,
+  unit price, and line total columns are now individually gated.
+- The `payment_method` row is **always** filtered out of the totals
+  footer in emails (it's UI scaffolding, not customer-facing info).
+
+### Deprecated
+- `display_discount_in_quote` setting is superseded by
+  `quote_table_show_discount`. The old key is still read on legacy
+  installs but the new section's toggle is the source of truth going
+  forward. Field label updated to flag the deprecation.
+
+### Migration notes
+- Sites upgrading from v1.26 or earlier:
+  - Visit `Settings -> JFB WC Quotes`. Two new sections will be
+    visible at the bottom: "Estimate Request Email - Order Details
+    Table" and "Prepared Quote Email - Order Details Table".
+  - The estimate-side defaults to everything OFF; if your
+    acknowledgement emails should now show pricing, opt in here.
+  - The quote-side defaults are: images ON, unit price ON, line total
+    ON, subtotal ON, shipping ON, fees ON, tax ON, grand total ON,
+    discount OFF (matches old default).
+- Existing modal checkboxes on the order edit screen still work and
+  override the settings defaults per-send.
+- Email body templates that include `[Order Details Table]` continue
+  to work without changes.
+
+---
+
 ## [1.26.0] - 2026-05-24
 
 ### Added

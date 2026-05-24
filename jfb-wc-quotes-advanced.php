@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI. HPOS-compatible; creates orders in-process via wc_create_order() (no REST credentials required).
- * Version:     1.26.0
+ * Version:     1.27.0
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '1.26.0' );
+define( 'JFBWQA_VERSION', '1.27.0' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_SETTINGS_SLUG', 'jfbwqa-settings' ); // Menu slug for settings page
 
@@ -138,7 +138,34 @@ function jfbwqa_get_options() {
         'quote_email_reply_to'   => get_option('admin_email'), // Default for new field
         'quote_email_cc'         => '', // Default for new field
         'quote_email_default_body' => "Hello {customer_first_name},\n\nYour quote is ready! Please find the details below:\n\n[Order Details Table]\n\nIf you have any questions, please let us know.\n\nRegards,\n{site_title}", // Removed {additional_message_from_admin}
-        'display_discount_in_quote' => false // Default off
+        'display_discount_in_quote' => false, // [DEPRECATED v1.27] superseded by quote_table_show_discount, kept for back-compat reads.
+
+        // v1.27: Estimate Request email - Order Details Table defaults.
+        // Conservative (nothing surfaced) so the acknowledgement email
+        // stays free of price/total info unless the admin opts in.
+        'est_table_show_image'       => true,
+        'est_table_show_unit_price'  => false,
+        'est_table_show_line_total'  => false,
+        'est_table_show_subtotal'    => false,
+        'est_table_show_shipping'    => false,
+        'est_table_show_fees'        => false,
+        'est_table_show_discount'    => false,
+        'est_table_show_tax'         => false,
+        'est_table_show_grand_total' => false,
+
+        // v1.27: Prepared Quote email - Order Details Table defaults.
+        // Liberal (everything surfaced) - a prepared quote is supposed
+        // to include pricing, otherwise it isn't a quote. Modal can
+        // still override per-send.
+        'quote_table_show_image'       => true,
+        'quote_table_show_unit_price'  => true,
+        'quote_table_show_line_total'  => true,
+        'quote_table_show_subtotal'    => true,
+        'quote_table_show_shipping'    => true,
+        'quote_table_show_fees'        => true,
+        'quote_table_show_discount'    => false, // off by default; admin opts in (parity with old display_discount_in_quote)
+        'quote_table_show_tax'         => true,
+        'quote_table_show_grand_total' => true,
     ];
     $options = get_option( JFBWQA_OPTION_NAME, [] );
 
@@ -317,6 +344,98 @@ function jfbwqa_legacy_credentials_notice() {
         </p>
     </div>
     <?php
+}
+
+/* =============================================================================
+   1.6) Email Order-Details Table Config (v1.27)
+   -----------------------------------------------------------------------------
+   Three layers:
+     1. jfbwqa_default_table_config()
+        Hardcoded defaults used when nothing else applies. Conservative -
+        nothing surfaced.
+     2. jfbwqa_get_table_config_from_settings( 'estimate' | 'quote' )
+        Reads admin-configured defaults from wp_options for the given
+        email type. Used as the baseline at send time.
+     3. jfbwqa_normalize_legacy_table_args( $show_prices, $show_grand, $discount )
+        Translates the v1.25/v1.26 positional argument shape used by
+        jfbwqa_replace_email_placeholders() into the new config-array
+        shape. Lets callers that haven't been updated yet keep working.
+   ============================================================================= */
+
+/**
+ * Default table config (everything hidden). Used as a base layer that
+ * higher layers (settings, modal overrides) merge into.
+ */
+function jfbwqa_default_table_config() {
+    return [
+        'show_image'       => true,  // images on by default - they're cheap and friendly
+        'show_unit_price'  => false,
+        'show_line_total'  => false,
+        'show_subtotal'    => false,
+        'show_shipping'    => false,
+        'show_fees'        => false,
+        'show_discount'    => false,
+        'show_tax'         => false,
+        'show_grand_total' => false,
+    ];
+}
+
+/**
+ * Read the per-email-type table config from wp_options.
+ *
+ * @param string $type 'estimate' or 'quote'.
+ * @return array Config array with all 9 toggles populated.
+ */
+function jfbwqa_get_table_config_from_settings( $type ) {
+    $type    = ( $type === 'quote' ) ? 'quote' : 'estimate';
+    $prefix  = ( $type === 'quote' ) ? 'quote_table_' : 'est_table_';
+    $opts    = jfbwqa_get_options();
+    $defaults = jfbwqa_default_table_config();
+    $config  = [];
+    foreach ( $defaults as $k => $default_value ) {
+        $opt_key       = $prefix . $k;
+        $config[ $k ]  = isset( $opts[ $opt_key ] )
+            ? (bool) $opts[ $opt_key ]
+            : (bool) $default_value;
+    }
+    return $config;
+}
+
+/**
+ * Translate the legacy positional ($show_prices, $show_grand_total_with_tax,
+ * $display_discount) argument shape into the new config-array shape.
+ *
+ * Mapping rationale: v1.25/v1.26 only had three knobs; "show prices" was a
+ * blanket switch covering unit price + line total + subtotal + shipping +
+ * fees + tax (the totals footer was all-or-nothing on prices). The two
+ * extra flags layered grand-total and discount on top of that. This helper
+ * preserves that semantics so callers that haven't migrated still produce
+ * identical output.
+ */
+function jfbwqa_normalize_legacy_table_args( $show_prices, $show_grand_total_with_tax = false, $display_discount = null ) {
+    $show_prices          = (bool) $show_prices;
+    $show_grand           = (bool) $show_grand_total_with_tax;
+    $display_discount     = ( $display_discount === null ) ? false : (bool) $display_discount;
+    return [
+        'show_image'       => true,
+        'show_unit_price'  => $show_prices,
+        'show_line_total'  => $show_prices,
+        'show_subtotal'    => $show_prices,
+        'show_shipping'    => $show_prices,
+        'show_fees'        => $show_prices,
+        'show_discount'    => $show_prices && $display_discount,
+        'show_tax'         => $show_prices,
+        'show_grand_total' => $show_prices && $show_grand,
+    ];
+}
+
+/**
+ * Reduce a config array down to "any pricing visible" - useful for the
+ * email-order-items template to know whether to render the price columns
+ * at all (controls the colspan and the table header row width).
+ */
+function jfbwqa_table_config_has_prices( $config ) {
+    return ! empty( $config['show_unit_price'] ) || ! empty( $config['show_line_total'] );
 }
 
 /* =============================================================================
@@ -775,24 +894,36 @@ function jfbwqa_handle_send_prepared_quote_action( $order, $subject_from_modal =
     // Apply wpautop to the raw body content (from modal or default settings) first
     $body_content_with_html_breaks = wpautop( wptexturize( $body_content ) );
 
-    // The $body_content_with_html_breaks is the full body, process its placeholders (like [Order Details Table])
-    $email_body_final = jfbwqa_replace_email_placeholders( $body_content_with_html_breaks, $order, $include_pricing_flag, $final_include_total_tax_flag, $display_discount_from_modal );
-
-    // NOW, append the processed custom message (which is now the main body) and then totals
-    // The custom message is already part of $body_content_with_html_breaks -> $email_body_final
-
-    // Append Subtotal and Total if flags are set
-    if ($include_pricing_flag) {
-        $subtotal_html = '<table class="td" role="presentation" border="0" cellpadding="6" cellspacing="0" width="100%" style="font-family: \'Helvetica Neue\', Helvetica, Roboto, Arial, sans-serif; margin-top:20px; border-top:1px solid #eee;"><tbody>';
-        $subtotal_html .= '<tr><td scope="row" colspan="2" style="text-align:left; border:none; padding:5px 0;"><strong>' . esc_html__('Subtotal', 'jfb-wc-quotes-advanced') . ':</strong></td><td style="text-align:right; border:none; padding:5px 0;">' . $order->get_subtotal_to_display() . '</td></tr>';
-        
-        if ($final_include_total_tax_flag) {
-            // You might want to add other totals here too like shipping, tax rows if available and desired
-            $subtotal_html .= '<tr><td scope="row" colspan="2" style="text-align:left; border:none; padding:5px 0;"><strong>' . esc_html__('Total (inc. Tax)', 'jfb-wc-quotes-advanced') . ':</strong></td><td style="text-align:right; border:none; padding:5px 0;">' . $order->get_formatted_order_total() . '</td></tr>';
-        }
-        $subtotal_html .= '</tbody></table>';
-        $email_body_final .= $subtotal_html;
+    // v1.27: Build the table config from quote-side settings, then overlay
+    // the per-send modal checkboxes. The modal currently exposes three
+    // checkboxes (include_pricing, include_total_tax, display_discount);
+    // these map onto five config keys via the same semantics the legacy
+    // boolean shape used. Future v1.28 modal will expose all 9 toggles
+    // directly.
+    $quote_table_config = jfbwqa_get_table_config_from_settings( 'quote' );
+    if ( $include_pricing_flag_from_modal !== null ) {
+        $quote_table_config['show_unit_price'] = (bool) $include_pricing_flag;
+        $quote_table_config['show_line_total'] = (bool) $include_pricing_flag;
+        $quote_table_config['show_subtotal']   = (bool) $include_pricing_flag;
+        $quote_table_config['show_shipping']   = (bool) $include_pricing_flag;
+        $quote_table_config['show_fees']       = (bool) $include_pricing_flag;
+        $quote_table_config['show_tax']        = (bool) $include_pricing_flag;
     }
+    if ( $include_total_tax_flag_from_modal !== null ) {
+        $quote_table_config['show_grand_total'] = (bool) $final_include_total_tax_flag;
+    }
+    if ( $display_discount_from_modal !== null ) {
+        $quote_table_config['show_discount'] = (bool) $display_discount_from_modal;
+    }
+
+    // The $body_content_with_html_breaks is the full body, process its placeholders (like [Order Details Table])
+    $email_body_final = jfbwqa_replace_email_placeholders( $body_content_with_html_breaks, $order, $quote_table_config );
+
+    // v1.27: The legacy code used to append a separate subtotal/total
+    // appendix table after the main body. That responsibility is now
+    // handled inside the [Order Details Table] renderer's tfoot, so the
+    // appendix has been removed - it was duplicating data and ignoring
+    // the per-section toggles.
 
     jfbwqa_write_log("DEBUG: Send Prepared Quote - Final Email Body for order #{$order_id} (length: " . strlen($email_body_final) . "): " . substr($email_body_final, 0, 500) . "...");
 
@@ -897,8 +1028,13 @@ function jfbwqa_handle_order_action( $order ) {
     $subject = str_replace(array_keys($replacements), array_values($replacements), $subject_template);
     $heading = str_replace(array_keys($replacements), array_values($replacements), $heading_template);
 
-    // Process body placeholders (Make sure to remove the [Order Details Table] replacement if using the template action)
-    $email_body = jfbwqa_replace_email_placeholders( $body_template, $order );
+    // v1.27: Build estimate-side table config from settings and pass it
+    // explicitly. Estimate request emails default everything OFF (just
+    // line items, no prices/totals/fees/shipping) unless the admin opts
+    // in via Settings -> JFB WC Quotes -> "Estimate Request Email -
+    // Order Details Table".
+    $est_table_config = jfbwqa_get_table_config_from_settings( 'estimate' );
+    $email_body = jfbwqa_replace_email_placeholders( $body_template, $order, $est_table_config );
     // *** DEBUG LOGGING START ***
     jfbwqa_write_log("DEBUG: jfbwqa_handle_order_action() - \$email_body AFTER placeholder replacement for order #{$order_id}: " . $email_body);
     // *** DEBUG LOGGING END ***
@@ -1004,9 +1140,242 @@ function jfbwqa_handle_order_action( $order ) {
 }
 
 /* =============================================================================
-   8) Placeholder Replacement Function (Reads options, uses mapping JSON)
+   7.5) Order Details Table Renderer (v1.27)
+   -----------------------------------------------------------------------------
+   Builds the HTML table that replaces the [Order Details Table] placeholder
+   in email bodies. Honors the table_config dict produced by either
+   jfbwqa_get_table_config_from_settings() or
+   jfbwqa_normalize_legacy_table_args().
+
+   Layout:
+     thead   - Image | Product | Qty [ | Unit Price ] [ | Total ]
+     tbody   - line items via emails/email-order-items.php template
+             - + fee rows (when show_fees)
+             - + shipping rows (when show_shipping)
+     tfoot   - subtotal | discount | tax | grand total
+               (each gated by its own toggle; payment_method ALWAYS hidden)
    ============================================================================= */
-function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = false, $show_grand_total_with_tax = false, $display_discount = null ) { // Added $display_discount parameter
+
+/**
+ * @param WC_Order $order
+ * @param array    $config Output of jfbwqa_default_table_config() merged
+ *                         with site-specific overrides.
+ * @return string Full <table>...</table> HTML.
+ */
+function jfbwqa_render_order_details_table( $order, $config ) {
+    $config     = wp_parse_args( $config, jfbwqa_default_table_config() );
+    $text_align = is_rtl() ? 'right' : 'left';
+    $td_styles  = 'text-align:' . esc_attr( $text_align ) . '; border: 1px solid #eee; padding: 12px;';
+    $th_styles  = $td_styles;
+    $th_label_styles = $th_styles . 'font-family: \'Helvetica Neue\', Helvetica, Roboto, Arial, sans-serif;';
+
+    $html  = '<table class="td" cellspacing="0" cellpadding="6" style="width: 100%; font-family: \'Helvetica Neue\', Helvetica, Roboto, Arial, sans-serif; border: 1px solid #eee; margin-bottom: 40px;" border="1">';
+
+    // --- THEAD --- columns depend on which price columns are enabled
+    $html .= '<thead><tr>';
+    if ( $config['show_image'] ) {
+        $html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Image', 'woocommerce' ) . '</th>';
+    }
+    $html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Product', 'woocommerce' ) . '</th>';
+    $html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Quantity', 'woocommerce' ) . '</th>';
+    if ( $config['show_unit_price'] ) {
+        $html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Unit Price', 'woocommerce' ) . '</th>';
+    }
+    if ( $config['show_line_total'] ) {
+        $html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Total', 'woocommerce' ) . '</th>';
+    }
+    $html .= '</tr></thead>';
+
+    // --- TBODY --- line items via the existing template, then fee/shipping
+    // rows appended below.
+    $line_items_html = wc_get_template_html(
+        'emails/email-order-items.php',
+        [
+            'order'              => $order,
+            'items'              => $order->get_items( 'line_item' ),
+            'show_sku'           => false,
+            'show_image'         => (bool) $config['show_image'],
+            'image_size'         => [ 64, 64 ],
+            'plain_text'         => false,
+            'sent_to_admin'      => false,
+            'show_purchase_note' => false,
+            // Internal flags consumed by our overridden template:
+            'jfbwqa_config'      => $config,
+        ],
+        '',
+        jfbwqa_plugin_dir() . 'woocommerce/'
+    );
+
+    $html .= '<tbody>' . $line_items_html;
+    $html .= jfbwqa_render_fee_rows_html( $order, $config );
+    $html .= jfbwqa_render_shipping_rows_html( $order, $config );
+    $html .= '</tbody>';
+
+    // --- TFOOT --- granular per-row gating; payment_method is ALWAYS skipped.
+    $totals = $order->get_order_item_totals();
+    if ( $totals ) {
+        $foot_rows  = '';
+        $num_cols   = ( $config['show_image'] ? 1 : 0 ) + 2  /* product + qty */
+                    + ( $config['show_unit_price'] ? 1 : 0 )
+                    + ( $config['show_line_total'] ? 1 : 0 );
+        $label_cs   = max( 1, $num_cols - 1 );
+
+        // Map of footer row keys -> config flag that gates them.
+        $row_gates = [
+            'cart_subtotal' => 'show_subtotal',
+            'discount'      => 'show_discount',
+            'tax'           => 'show_tax',
+            'order_total'   => 'show_grand_total',
+        ];
+
+        foreach ( $totals as $key => $total_data ) {
+            // Always-hide rows: payment_method (UI scaffolding, not customer info).
+            if ( $key === 'payment_method' ) {
+                continue;
+            }
+            // Shipping/fees were already rendered as table-body rows in the
+            // current design, so we don't double them up in the footer.
+            if ( $key === 'shipping' || $key === 'fee' || strpos( $key, 'fee_' ) === 0 ) {
+                continue;
+            }
+            // Tax rows from get_order_item_totals look like 'tax_<id>' OR a
+            // single 'tax' line - treat all as the same gate.
+            $gate_key = ( strpos( $key, 'tax' ) === 0 ) ? 'show_tax' : ( $row_gates[ $key ] ?? null );
+            if ( ! $gate_key || empty( $config[ $gate_key ] ) ) {
+                continue;
+            }
+            $foot_rows .= '<tr>'
+                . '<th class="td" scope="row" colspan="' . esc_attr( $label_cs ) . '" style="' . $th_label_styles . 'border-top-width: 1px;">'
+                . esc_html( $total_data['label'] )
+                . '</th>'
+                . '<td class="td" style="' . $td_styles . 'border-top-width: 1px;">'
+                . wp_kses_post( $total_data['value'] )
+                . '</td>'
+                . '</tr>';
+        }
+        if ( $foot_rows !== '' ) {
+            $html .= '<tfoot>' . $foot_rows . '</tfoot>';
+        }
+    }
+
+    $html .= '</table>';
+    return $html;
+}
+
+/**
+ * Render fee items as table-body rows (one row per fee).
+ * Returns '' when show_fees is off or there are no fees.
+ *
+ * Row shape mirrors a line-item row: [image?] [name] [qty=1] [unit_price?] [line_total?]
+ */
+function jfbwqa_render_fee_rows_html( $order, $config ) {
+    if ( empty( $config['show_fees'] ) ) {
+        return '';
+    }
+    $fees = $order->get_items( 'fee' );
+    if ( empty( $fees ) ) {
+        return '';
+    }
+    $rows = '';
+    foreach ( $fees as $fee ) {
+        if ( ! $fee instanceof WC_Order_Item_Fee ) {
+            continue;
+        }
+        $rows .= jfbwqa_render_synthetic_row_html(
+            $fee->get_name(),
+            1,
+            (float) $fee->get_total(),
+            $config,
+            __( 'Fee', 'jfb-wc-quotes-advanced' )
+        );
+    }
+    return $rows;
+}
+
+/**
+ * Render shipping items as table-body rows (one row per shipping method).
+ * Returns '' when show_shipping is off or there are no shipping items.
+ */
+function jfbwqa_render_shipping_rows_html( $order, $config ) {
+    if ( empty( $config['show_shipping'] ) ) {
+        return '';
+    }
+    $shipping_items = $order->get_items( 'shipping' );
+    if ( empty( $shipping_items ) ) {
+        return '';
+    }
+    $rows = '';
+    foreach ( $shipping_items as $ship ) {
+        if ( ! $ship instanceof WC_Order_Item_Shipping ) {
+            continue;
+        }
+        $label = $ship->get_method_title();
+        if ( $label === '' ) {
+            $label = __( 'Shipping', 'jfb-wc-quotes-advanced' );
+        }
+        $rows .= jfbwqa_render_synthetic_row_html(
+            $label,
+            1,
+            (float) $ship->get_total(),
+            $config,
+            __( 'Shipping', 'jfb-wc-quotes-advanced' )
+        );
+    }
+    return $rows;
+}
+
+/**
+ * Helper: render a single tbody row for a synthetic line (fee or shipping).
+ * Honors the same column layout as line items so the table stays aligned.
+ *
+ * @param string $name         Display name for the Product column (e.g., "Standard Delivery").
+ * @param int    $qty          Quantity (always 1 for fees / single shipping line).
+ * @param float  $line_total   Amount in store currency.
+ * @param array  $config       Table config (drives column visibility).
+ * @param string $type_prefix  Italic prefix shown next to the name (e.g., "Shipping" or "Fee").
+ * @return string HTML for one <tr>...</tr>.
+ */
+function jfbwqa_render_synthetic_row_html( $name, $qty, $line_total, $config, $type_prefix = '' ) {
+    $text_align = is_rtl() ? 'right' : 'left';
+    $cell_base  = 'text-align:' . esc_attr( $text_align ) . '; vertical-align:middle; padding:8px; font-family: \'Helvetica Neue\', Helvetica, Roboto, Arial, sans-serif; border: 1px solid #eee;';
+    $unit_price = $qty > 0 ? $line_total / $qty : $line_total;
+
+    $row = '<tr class="order_item jfbwqa-synthetic-row">';
+    if ( ! empty( $config['show_image'] ) ) {
+        // Empty image cell to keep column alignment with line-item rows.
+        $row .= '<td class="td" style="text-align:center; vertical-align:middle; padding:8px; border:1px solid #eee; width:74px;">&nbsp;</td>';
+    }
+    $row .= '<td class="td" style="' . $cell_base . ' word-wrap:break-word;">';
+    if ( $type_prefix !== '' ) {
+        $row .= '<em style="color:#666; font-size:0.9em;">' . esc_html( $type_prefix ) . ':</em> ';
+    }
+    $row .= esc_html( $name );
+    $row .= '</td>';
+    $row .= '<td class="td" style="' . $cell_base . '">' . esc_html( (string) $qty ) . '</td>';
+    if ( ! empty( $config['show_unit_price'] ) ) {
+        $row .= '<td class="td" style="' . $cell_base . '">' . wp_kses_post( wc_price( $unit_price ) ) . '</td>';
+    }
+    if ( ! empty( $config['show_line_total'] ) ) {
+        $row .= '<td class="td" style="' . $cell_base . '">' . wp_kses_post( wc_price( $line_total ) ) . '</td>';
+    }
+    $row .= '</tr>';
+    return $row;
+}
+
+/* =============================================================================
+   8) Placeholder Replacement Function (Reads options, uses mapping JSON)
+   -----------------------------------------------------------------------------
+   v1.27 signature: 3rd argument now accepts either:
+   - An array (new): the explicit table-config dict produced by
+     jfbwqa_get_table_config_from_settings() or jfbwqa_default_table_config().
+     The 4th and 5th positional args are ignored when this is an array.
+   - A bool/null (legacy): the old $show_prices flag. The function will
+     also read $show_grand_total_with_tax (4th arg) and $display_discount
+     (5th arg) and translate the trio into the new config shape via
+     jfbwqa_normalize_legacy_table_args(). Existing callers that haven't
+     migrated produce identical output.
+   ============================================================================= */
+function jfbwqa_replace_email_placeholders( $content, $order, $config_or_show_prices = false, $show_grand_total_with_tax = false, $display_discount = null ) {
     // Add this check for null content
     if ( ! is_string($content) ) {
         jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Initial content is not a string or is null. Order ID: " . ($order instanceof WC_Order ? $order->get_id() : 'N/A') . ". Content Value: " . print_r($content, true));
@@ -1020,6 +1389,18 @@ function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = fal
         jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Initial content (short): " . $content);
     }
 
+    // Resolve the table config - either passed directly (new style) or
+    // translated from the legacy positional args.
+    if ( is_array( $config_or_show_prices ) ) {
+        $table_config = wp_parse_args( $config_or_show_prices, jfbwqa_default_table_config() );
+    } else {
+        $table_config = jfbwqa_normalize_legacy_table_args(
+            $config_or_show_prices,
+            $show_grand_total_with_tax,
+            $display_discount
+        );
+    }
+    jfbwqa_write_log( 'DEBUG: jfbwqa_replace_email_placeholders() - Resolved table config: ' . wp_json_encode( $table_config ) );
 
     $options = jfbwqa_get_options(); $mapping = jfbwqa_read_mapping();
 
@@ -1039,115 +1420,12 @@ function jfbwqa_replace_email_placeholders( $content, $order, $show_prices = fal
     // Special Placeholder: Order Items Table
     $order_details_table_placeholder = '[Order Details Table]';
     if ( strpos( $content, $order_details_table_placeholder ) !== false ) {
-        jfbwqa_write_log("DEBUG: Found '{$order_details_table_placeholder}' for order #{$order_id_for_log}. Will build full table.");
-        
-        $order_items = $order->get_items(); // Get items for the template
-
-        // Define $table_args for email-order-items.php template
-        $table_args = array(
-            'order'                 => $order,
-            'items'                 => $order_items,
-            'show_sku'              => false, 
-            'show_image'            => true, // Ensure images are on
-            'image_size'            => array( 64, 64 ), // Keep our desired image size
-            'plain_text'            => false,
-            'sent_to_admin'         => false,
-            'show_purchase_note'    => false, 
-            'show_prices'           => $show_prices // Pass the flag that controls price visibility in our overridden template
-        );
-        jfbwqa_write_log("DEBUG: Table args for email-order-items.php: " . print_r($table_args, true));
-
-        $item_rows_html = wc_get_template_html( 'emails/email-order-items.php', 
-            $table_args, // Pass the defined args
-            '', 
-            jfbwqa_plugin_dir() . 'woocommerce/' // Always use our custom template
-        );
-
-        if (empty($item_rows_html)) {
-            jfbwqa_write_log("WARNING: wc_get_template_html for 'emails/email-order-items.php' returned EMPTY for order #{$order_id_for_log}.");
-        }
-
-        $text_align = is_rtl() ? 'right' : 'left';
-        $table_header_footer_styles = 'font-family: \'Helvetica Neue\', Helvetica, Roboto, Arial, sans-serif; border: 1px solid #eee;';
-        $th_styles = 'text-align:' . esc_attr($text_align) . '; border: 1px solid #eee; padding: 12px;';
-        $td_styles_totals = 'text-align:' . esc_attr($text_align) . '; border: 1px solid #eee; padding: 12px;';
-
-        $full_table_html = '<table class="td" cellspacing="0" cellpadding="6" style="width: 100%; ' . $table_header_footer_styles . ' margin-bottom: 40px;" border="1">';
-        
-        // THEAD
-        $full_table_html .= '<thead><tr>';
-        // Separate headers for Photo and Product (fixes column alignment)
-        $full_table_html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Image', 'woocommerce' ) . '</th>';
-        $full_table_html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Product', 'woocommerce' ) . '</th>';
-        $full_table_html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Quantity', 'woocommerce' ) . '</th>';
-        if ( $show_prices ) {
-            $full_table_html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Unit Price', 'woocommerce' ) . '</th>';
-            $full_table_html .= '<th class="td" scope="col" style="' . $th_styles . '">' . esc_html__( 'Total', 'woocommerce' ) . '</th>';
-        }
-        $full_table_html .= '</tr></thead>';
-
-        // TBODY (from the template)
-        $full_table_html .= '<tbody>' . $item_rows_html . '</tbody>';
-
-        // TFOOT (conditional, based on $show_prices and the new flag for grand total)
-        // The $include_total_tax_flag needs to be available here. 
-        // For now, let's assume we only add it if $show_prices is true.
-        // We'll need to fetch it from order meta if it's not passed directly. This function is generic.
-        // For the purpose of this placeholder, let's rely on the passed $show_prices flag for simplicity now
-        // and the actual decision to show grand_total will be if the $order->get_order_item_totals() returns it.
-
-        if ( $show_prices ) {
-            $totals = $order->get_order_item_totals();
-            if ( $totals ) {
-                $full_table_html .= '<tfoot>';
-                
-                // Get the display discount setting - use parameter if provided, otherwise fall back to global setting
-                if ($display_discount === null) {
-                    $options = jfbwqa_get_options();
-                    $display_discount = isset($options['display_discount_in_quote']) ? $options['display_discount_in_quote'] : false;
-                }
-                
-                foreach ( $totals as $key => $total_data ) {
-                    // Only show 'order_total' if $show_grand_total_with_tax is true
-                    // Always show subtotal if prices are on.
-                    // Other totals (shipping, tax rows) will be shown if WC includes them.
-                    if ($key === 'order_total' && !$show_grand_total_with_tax) {
-                        continue; 
-                    }
-                    
-                    // Skip discount row if setting is off
-                    if ($key === 'discount' && !$display_discount) {
-                        continue;
-                    }
-                    
-                    // If you want to EXPLICITLY only show subtotal and (conditionally) total, filter here:
-                    // if ( !in_array($key, array('cart_subtotal', 'order_total')) ) continue;
-                    // if ( $key === 'order_total' && !$show_grand_total_with_tax ) continue;
-
-                    $colspan = $show_prices ? 4 : 2; // Photo, Name, Qty, Unit Price = 4 headers before total.
-                                                     // If Price is hidden, Photo, Name = 2 headers before Qty.
-                                                     // The label for totals spans all columns except the value column.
-                                                     // Number of actual data columns in tbody: (image) + name/meta + qty + unit_price + total (if shown)
-                                                     // So, 5 if prices shown, 3 if not.
-                                                     // Totals label colspan should be this number - 1.
-                    $num_data_cols = 2 + 1 + ($show_prices ? 2 : 0); // Photo col + Name/Meta col + Qty col + (Unit Price col + Total col)
-                    $label_colspan = $num_data_cols -1;
-
-                    $full_table_html .= '<tr>';
-                    $full_table_html .= '<th class="td" scope="row" colspan="' . $label_colspan . '" style="' . $th_styles . 'border-top-width: 1px;">' . esc_html( $total_data['label'] ) . '</th>';
-                    $full_table_html .= '<td class="td" style="' . $td_styles_totals . 'border-top-width: 1px;">' . wp_kses_post( $total_data['value'] ) . '</td>';
-                    $full_table_html .= '</tr>';
-                }
-                $full_table_html .= '</tfoot>';
-            }
-        }
-
-        $full_table_html .= '</table>';
-        
-        $content = str_replace($order_details_table_placeholder, $full_table_html, $content);
-        jfbwqa_write_log("DEBUG: Successfully built and replaced '{$order_details_table_placeholder}' with full table for order #{$order_id_for_log}.");
+        jfbwqa_write_log( "DEBUG: Found '{$order_details_table_placeholder}' for order #{$order_id_for_log}. Building table from config." );
+        $full_table_html = jfbwqa_render_order_details_table( $order, $table_config );
+        $content         = str_replace( $order_details_table_placeholder, $full_table_html, $content );
+        jfbwqa_write_log( "DEBUG: Replaced '{$order_details_table_placeholder}' with rendered table (" . strlen( $full_table_html ) . ' chars) for order #' . $order_id_for_log );
     } else {
-        jfbwqa_write_log("DEBUG: jfbwqa_replace_email_placeholders() - Did NOT find '{$order_details_table_placeholder}' in content for order #{$order_id_for_log}.");
+        jfbwqa_write_log( "DEBUG: jfbwqa_replace_email_placeholders() - Did NOT find '{$order_details_table_placeholder}' in content for order #{$order_id_for_log}." );
     }
 
     // Advanced Placeholders: {[field_name]}
@@ -1259,7 +1537,65 @@ function jfbwqa_settings_init() {
     add_settings_field( 'quote_email_reply_to', __('Quote Email Reply-To', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_email_reply_to', 'type' => 'email', 'placeholder' => get_option('admin_email')] );
     add_settings_field( 'quote_email_cc', __('Quote Email CC', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_email_cc', 'type' => 'email', 'placeholder' => 'e.g., sales@example.com'] );
     add_settings_field( 'quote_email_default_body', __('Quote Email Default Body', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_wp_editor', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_email_default_body'] );
-    add_settings_field( 'display_discount_in_quote', __('Display Discount Row in Quote', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'display_discount_in_quote', 'desc' => __('Show discount row in quote emails when discounts are applied', 'jfb-wc-quotes-advanced')] );
+    add_settings_field( 'display_discount_in_quote', __('Display Discount Row in Quote', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'display_discount_in_quote', 'desc' => __('[Deprecated v1.27] Use the dedicated "Show discount row" checkbox in the new Order Details Table sections below.', 'jfb-wc-quotes-advanced')] );
+
+    /* -------------------------------------------------------------------
+     * v1.27: Order Details Table sections - one per email type.
+     * Each section exposes the same 9 toggles that gate what shows in
+     * the rendered table when [Order Details Table] is in the body.
+     * Modal-based per-send overrides (prepared quote) layer on top of
+     * the quote-side defaults; the estimate side has no modal yet
+     * (coming in v1.28) so its settings are the only knobs.
+     * ------------------------------------------------------------------- */
+    $table_field_specs = [
+        'show_image'       => [ __( 'Show product images',           'jfb-wc-quotes-advanced' ) ],
+        'show_unit_price'  => [ __( 'Show unit price column',        'jfb-wc-quotes-advanced' ) ],
+        'show_line_total'  => [ __( 'Show line total column',        'jfb-wc-quotes-advanced' ) ],
+        'show_subtotal'    => [ __( 'Show subtotal row in footer',   'jfb-wc-quotes-advanced' ) ],
+        'show_shipping'    => [ __( 'Show shipping row(s) as table rows',  'jfb-wc-quotes-advanced' ) ],
+        'show_fees'        => [ __( 'Show fee row(s) as table rows',       'jfb-wc-quotes-advanced' ) ],
+        'show_discount'    => [ __( 'Show discount row in footer',   'jfb-wc-quotes-advanced' ) ],
+        'show_tax'         => [ __( 'Show tax row in footer',        'jfb-wc-quotes-advanced' ) ],
+        'show_grand_total' => [ __( 'Show grand total row in footer','jfb-wc-quotes-advanced' ) ],
+    ];
+
+    // Estimate Request - Order Details Table
+    add_settings_section(
+        'jfbwqa_section_est_table',
+        __( 'Estimate Request Email - Order Details Table', 'jfb-wc-quotes-advanced' ),
+        'jfbwqa_render_section_est_table_desc',
+        JFBWQA_SETTINGS_SLUG
+    );
+    foreach ( $table_field_specs as $suffix => $spec ) {
+        $opt_key = 'est_table_' . $suffix;
+        add_settings_field(
+            $opt_key,
+            $spec[0],
+            'jfbwqa_render_field_checkbox',
+            JFBWQA_SETTINGS_SLUG,
+            'jfbwqa_section_est_table',
+            [ 'key' => $opt_key ]
+        );
+    }
+
+    // Prepared Quote - Order Details Table
+    add_settings_section(
+        'jfbwqa_section_quote_table',
+        __( 'Prepared Quote Email - Order Details Table', 'jfb-wc-quotes-advanced' ),
+        'jfbwqa_render_section_quote_table_desc',
+        JFBWQA_SETTINGS_SLUG
+    );
+    foreach ( $table_field_specs as $suffix => $spec ) {
+        $opt_key = 'quote_table_' . $suffix;
+        add_settings_field(
+            $opt_key,
+            $spec[0],
+            'jfbwqa_render_field_checkbox',
+            JFBWQA_SETTINGS_SLUG,
+            'jfbwqa_section_quote_table',
+            [ 'key' => $opt_key ]
+        );
+    }
 
     // Email Deliverability Section
     add_settings_section(
@@ -1286,6 +1622,14 @@ function jfbwqa_render_section_email_desc() {
 function jfbwqa_render_section_quote_email_desc() {
     echo '<p>' . esc_html__('Customize the default content for the email sent when a quote is prepared and sent to the customer (typically from the order edit screen).', 'jfb-wc-quotes-advanced') . '</p>';
     echo '<p>' . esc_html__('Placeholders like {order_number}, {[your_jetengine_field]}, and [Order Details Table] can be used. The actual message sent can be further customized on the order edit page.', 'jfb-wc-quotes-advanced') . '</p>';
+}
+function jfbwqa_render_section_est_table_desc() {
+    echo '<p>' . esc_html__( 'These checkboxes control what appears in the [Order Details Table] placeholder when the estimate-request acknowledgement email is sent. The acknowledgement email is what the customer sees right after submitting the request form, before you have prepared a real quote.', 'jfb-wc-quotes-advanced' ) . '</p>';
+    echo '<p>' . esc_html__( 'Recommended: leave most rows OFF for the acknowledgement email; you will surface pricing in the prepared-quote email instead.', 'jfb-wc-quotes-advanced' ) . '</p>';
+}
+function jfbwqa_render_section_quote_table_desc() {
+    echo '<p>' . esc_html__( 'These checkboxes control what appears in the [Order Details Table] placeholder when the prepared-quote email is sent. They serve as defaults; the per-send modal on the order edit screen can override them on a per-quote basis.', 'jfb-wc-quotes-advanced' ) . '</p>';
+    echo '<p>' . esc_html__( 'Recommended: enable line totals, subtotal, shipping, fees, and grand total. Discount and tax can be enabled if your store applies them.', 'jfb-wc-quotes-advanced' ) . '</p>';
 }
 function jfbwqa_render_section_deliverability_desc() {
     echo '<p>' . esc_html__('To significantly improve the chances of your estimate emails reaching the inbox and not being marked as spam, it is highly recommended to configure certain DNS records for your domain (the domain emails are sent from, e.g., luxeandpetals.com). This plugin now sends emails from "noreply@yourdomain.com".', 'jfb-wc-quotes-advanced') . '</p>';
@@ -1470,6 +1814,19 @@ function jfbwqa_sanitize_options( $input ) {
     $output['quote_email_cc'] = sanitize_email($input['quote_email_cc'] ?? '');
     if (isset($input['quote_email_default_body'])) $output['quote_email_default_body'] = wp_kses_post(wp_unslash($input['quote_email_default_body']));
     $output['display_discount_in_quote'] = isset($input['display_discount_in_quote']) ? true : false;
+
+    // v1.27: Per-email-type Order Details Table toggles.
+    // All 18 keys (9 estimate + 9 quote) are simple checkboxes; if not
+    // posted, the field was unchecked - store false. We don't fall back
+    // to the existing DB value here because the sanitize callback receives
+    // the full POST array, and an unchecked checkbox means "off".
+    foreach ( [ 'est_table_', 'quote_table_' ] as $prefix ) {
+        foreach ( [ 'show_image', 'show_unit_price', 'show_line_total', 'show_subtotal',
+                   'show_shipping', 'show_fees', 'show_discount', 'show_tax', 'show_grand_total' ] as $suffix ) {
+            $key            = $prefix . $suffix;
+            $output[ $key ] = isset( $input[ $key ] ) ? (bool) $input[ $key ] : false;
+        }
+    }
 
     jfbwqa_write_log("General plugin settings sanitized.");
     // NOTE: Mapping is saved separately, not via this callback.
