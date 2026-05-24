@@ -1,0 +1,39 @@
+# --- Editor / IDE swap & temp files ---
+*.swp
+*.swo
+*.swn
+*~
+.idea/
+.vscode/
+
+# --- OS junk ---
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.lnk
+
+# --- Stray notes / scratch files ---
+New Text Document.txt
+*.bak
+*.orig
+
+# --- Temp commit message buffers (PowerShell workflow) ---
+commit-msg-tmp.txt
+commit-msg*.txt
+
+# --- Sensitive: do NOT commit live API credentials, settings dumps, or runtime data ---
+# Plugin settings live in wp_options. They should never be checked in.
+plugin-config.json
+
+# --- Runtime / generated files ---
+debug/debug.log
+debug/*.log
+
+# NOTE: field-mapping.json and jetform-latest.json are currently tracked
+# because they ship as the default scaffold. They are runtime config
+# (the admin UI writes to them) and should ideally migrate into
+# wp_options or wp-content/uploads in a future cleanup.
+
+# --- Dependency directories (in case anyone adds composer/node later) ---
+/vendor/
+/node_modules/
