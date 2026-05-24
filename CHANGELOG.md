@@ -4,6 +4,125 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [1.28.0] - 2026-05-24
+
+### Changed - Single dynamic metabox replaces the modal stack
+
+This release retires the modal-based "Send Estimate Response" flow
+that shipped in v1.21 and was never reliable on HPOS sites. The
+order edit screen now has one rich metabox - **JFBWQA: Email Action
+Composer** - that reveals exactly one compose section based on
+whichever option is selected in WooCommerce's native "Order actions"
+dropdown.
+
+The flow: pick an action -> the matching section appears -> edit
+overrides -> click WC's `>` arrow to submit. WC's native form
+submission does the heavy lifting; our hook on
+`woocommerce_order_action_<slug>` reads the saved overrides and sends
+the email. No popups, no AJAX, no modal HTML, no separate "Send"
+buttons anywhere.
+
+### Removed
+- `jfbwqa_render_quote_controls_for_actions()` - the
+  "Send Estimate Response" button injected into the order-items
+  toolbar. The button never reliably opened anything.
+- `jfbwqa_output_quote_modal_html()` - the 250-line fixed-position
+  modal output. Gone in its entirety.
+- `jfbwqa_ajax_send_quote_handler()` and the
+  `wp_ajax_jfbwqa_send_quote_via_metabox` registration. AJAX is no
+  longer needed.
+- `jfbwqa_render_custom_email_message_metabox()` /
+  `jfbwqa_save_custom_email_message_meta()` - the v1.21-era single
+  textarea metabox. Replaced by the new composer's body field.
+- `jfbwqa_save_prepared_quote_meta()` - the unused saver that mirrored
+  the never-rendered prepared-quote metabox.
+- `jfbwqa_add_prepared_quote_metabox_revised()` /
+  `jfbwqa_render_prepared_quote_metabox_content()` - dead-code
+  placeholders from v1.16-v1.21 attempts at the prepared-quote UI.
+- `jfbwqa_enqueue_order_edit_scripts()` - replaced by
+  `jfbwqa_enqueue_action_composer_scripts()`.
+- `assets/js/admin-order-metabox.js` - 95% commented out and tied to
+  the now-removed modal. Replaced by `assets/js/admin-action-composer.js`.
+- The `jfbwqa_handle_send_prepared_quote_action()` signature
+  collapsed from 9 positional args (most of them duplicate AJAX-modal
+  override slots) to a single `$order` parameter. Reads everything
+  from order meta now.
+
+### Added
+- **JFBWQA: Email Action Composer** metabox in the order edit screen
+  main column. Renders both action sections (Estimate Request and
+  Prepared Quote) but reveals exactly one based on the
+  "Order actions" dropdown selection.
+- Per-section override fields:
+  - Subject (override) - empty falls back to settings default
+  - Heading (override)
+  - Reply-To (override)
+  - CC (override)
+  - Body (override) - textarea, supports `[Order Details Table]`
+    placeholder + JE meta placeholders
+  - **Override Order Details Table** master checkbox + 9 per-toggle
+    overrides. Greys out the per-toggle checkboxes when the master
+    is off. When on, fully replaces the settings defaults for that
+    email send.
+- New helper functions:
+  - `jfbwqa_action_to_email_type_map()` - canonical map of WC order
+    action slug -> email type ('estimate' | 'quote'). Other code that
+    needs to know which action goes with which email type should use
+    this.
+  - `jfbwqa_default_email_overrides()` - default shape of the override
+    array stored in order meta.
+  - `jfbwqa_get_email_overrides( $order, $email_type )` - merge-with-
+    defaults reader for the saved override array.
+  - `jfbwqa_resolve_table_config_for_send( $order, $email_type )` -
+    one-stop resolver: settings defaults, then per-order
+    `override_table` flips, returns the final 9-key config dict.
+- New constants: `JFBWQA_META_ESTREQ_OVERRIDES` and
+  `JFBWQA_META_QUOTE_OVERRIDES` so meta keys aren't string-literal
+  scattered across the codebase.
+- `assets/js/admin-action-composer.js` - vanilla-JS module that
+  finds the WC order-action select (multi-selector to handle legacy
+  + HPOS variants), shows/hides composer sections on change, and
+  greys out the table-override fieldset when the master toggle is
+  off. No jQuery dependency.
+
+### Changed - Handler internals
+- `jfbwqa_handle_order_action()` (Estimate Request flow) now reads
+  per-order subject/heading/body/reply-to/cc overrides from
+  `_jfbwqa_estreq_overrides` and uses the new
+  `jfbwqa_resolve_table_config_for_send( $order, 'estimate' )`
+  helper. Empty overrides fall back to plugin settings, preserving
+  v1.27 behavior for orders without overrides.
+- The legacy `_jfbwqa_custom_email_message` meta is still read as the
+  email's "Message from Admin" appendix when no body override is
+  present - back-compat for orders saved with the v1.21-v1.27
+  textarea metabox.
+- `jfbwqa_handle_send_prepared_quote_action()` rewrite: reads from
+  `_jfbwqa_quote_overrides`. The "Pricing was included/hidden" order
+  note is now derived from the resolved table config instead of a
+  positional bool. The status flip to `quote-sent` (which used to
+  live in the AJAX wrapper) now happens in the handler itself, so
+  it works whether the action fires via the dropdown or programmatically.
+
+### Migration notes
+- Existing orders that had values saved into the v1.21 textarea
+  metabox (`_jfbwqa_custom_email_message`) keep working: when the
+  action fires and the new body override is empty, the legacy text
+  still appears as the email's "Message from Admin" appendix. Once
+  an admin saves a body override on the new metabox, the appendix
+  is suppressed (the override body is presumed canonical).
+- The deprecated `_jfbwqa_quote_include_pricing` /
+  `_jfbwqa_quote_include_total_tax` order meta keys are no longer
+  read by the handler; their replacements live inside the
+  `_jfbwqa_quote_overrides['table']` array. Old keys remain in the
+  DB harmlessly.
+- The Order Actions dropdown is unchanged. The `>` arrow button is
+  the only trigger now.
+- See `woocommerce-build-plan.md` section 9.4.1 for the deferred
+  kanban + admin-reorder vision; v1.28 is the bridge UX, not the
+  endgame.
+
+---
+
 ## [1.27.0] - 2026-05-24
 
 ### Added
