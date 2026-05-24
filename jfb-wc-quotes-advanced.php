@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI. HPOS-compatible; creates orders in-process via wc_create_order() (no REST credentials required).
- * Version:     1.25.0
+ * Version:     1.26.0
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '1.25.0' );
+define( 'JFBWQA_VERSION', '1.26.0' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_SETTINGS_SLUG', 'jfbwqa-settings' ); // Menu slug for settings page
 
@@ -1236,7 +1236,7 @@ function jfbwqa_settings_init() {
     add_settings_section('jfbwqa_section_general', __('General Settings', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_section_general_desc', JFBWQA_SETTINGS_SLUG);
     add_settings_field( 'hook_name', __('JetFormBuilder Hook Name', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_general', ['key' => 'hook_name', 'type' => 'text', 'desc' => __('Custom filter hook used in JFB form.', 'jfb-wc-quotes-advanced')] );
     add_settings_field( 'shortcode_name', __('Cart JSON Shortcode Tag', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_general', ['key' => 'shortcode_name', 'type' => 'text', 'desc' => sprintf(__('Tag for shortcode like %s.', 'jfb-wc-quotes-advanced'), '<code>[your_tag_here]</code>')] );
-    add_settings_field( 'jetengine_keys', __('JetEngine Meta Keys (for mapping/placeholders)', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_textarea', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_general', ['key' => 'jetengine_keys', 'desc' => __('One key per line. Makes them available as *JE_meta*.key_name in mapping dropdowns and {[key_name]} in emails.', 'jfb-wc-quotes-advanced')] );
+    add_settings_field( 'jetengine_keys', __('JetEngine Meta Keys (for mapping/placeholders)', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_je_keys_textarea', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_general', ['key' => 'jetengine_keys', 'desc' => __('One key per line. Makes them available as *JE_meta*.key_name in mapping dropdowns and {[key_name]} in emails.', 'jfb-wc-quotes-advanced')] );
     add_settings_field( 'enable_debug', __('Enable Debug Logging', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_general', ['key' => 'enable_debug', 'desc' => sprintf(__('Log to %s.', 'jfb-wc-quotes-advanced'), '<code>' . esc_html(trailingslashit(jfbwqa_plugin_dir()) . 'debug/debug.log') . '</code>')] );
 
     // Email Settings Section
@@ -1330,6 +1330,109 @@ function jfbwqa_render_field_textarea( $args ) {
     $options = jfbwqa_get_options(); $key = $args['key'];
     printf('<textarea id="%s" name="%s[%s]" rows="5" class="large-text">%s</textarea>', esc_attr($key), esc_attr(JFBWQA_OPTION_NAME), esc_attr($key), esc_textarea($options[$key] ?? ''));
     if (isset($args['desc'])) printf('<p class="description">%s</p>', wp_kses_post($args['desc']));
+}
+
+/**
+ * Specialized renderer for the JetEngine Meta Keys textarea.
+ *
+ * Adds an "Auto-derive from current mapping" button that scans
+ * field-mapping.json for any *JE_meta*.<key> targets and offers
+ * a one-click merge into the textarea. The merge is client-side
+ * only; nothing is persisted until the user clicks "Save All Settings".
+ *
+ * Rationale: the textarea field's contents drive (a) which keys
+ * appear as *JE_meta*.<key> options in the mapping dropdown and
+ * (b) the email placeholder priority list. If a key is mapped but
+ * not listed here, it still works at submit-time (the mapping is
+ * the source of truth for routing the form value), but rebuilding
+ * the mapping table or expanding {[key]} placeholders is slower /
+ * less convenient. This button keeps the two in sync without
+ * forcing the admin to retype keys they already used in the mapping.
+ */
+function jfbwqa_render_field_je_keys_textarea( $args ) {
+    $options = jfbwqa_get_options();
+    $key     = $args['key'];
+    $value   = $options[ $key ] ?? '';
+
+    // Compute derived keys server-side at render time, no AJAX needed.
+    $mapping = jfbwqa_read_mapping();
+    $derived = [];
+    foreach ( (array) $mapping as $form_field => $targets ) {
+        foreach ( (array) $targets as $target ) {
+            if ( is_string( $target ) && strpos( $target, '*JE_meta*.' ) === 0 ) {
+                $key_name = substr( $target, strlen( '*JE_meta*.' ) );
+                if ( $key_name !== '' ) {
+                    $derived[] = $key_name;
+                }
+            }
+        }
+    }
+    $derived = array_values( array_unique( $derived ) );
+    sort( $derived );
+
+    printf(
+        '<textarea id="%s" name="%s[%s]" rows="5" class="large-text">%s</textarea>',
+        esc_attr( $key ),
+        esc_attr( JFBWQA_OPTION_NAME ),
+        esc_attr( $key ),
+        esc_textarea( $value )
+    );
+
+    if ( ! empty( $derived ) ) {
+        $count    = count( $derived );
+        $hint_msg = sprintf(
+            /* translators: %d: number of JE keys derived from the field mapping */
+            _n(
+                'Found %d JetEngine meta key in your field mapping.',
+                'Found %d JetEngine meta keys in your field mapping.',
+                $count,
+                'jfb-wc-quotes-advanced'
+            ),
+            $count
+        );
+
+        printf(
+            '<p style="margin-top:8px;"><button type="button" class="button" id="jfbwqa-derive-je-keys" data-derived="%s">%s</button> <span style="font-size:0.9em; color:#666;">%s</span></p>',
+            esc_attr( wp_json_encode( $derived ) ),
+            esc_html__( 'Auto-derive from current mapping', 'jfb-wc-quotes-advanced' ),
+            esc_html( $hint_msg )
+        );
+
+        $added_label = esc_js( __( 'Added — remember to click "Save All Settings"', 'jfb-wc-quotes-advanced' ) );
+        ?>
+        <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            var btn = document.getElementById('jfbwqa-derive-je-keys');
+            var ta  = document.getElementById('jetengine_keys');
+            if (!btn || !ta) { return; }
+            btn.addEventListener('click', function () {
+                var derived = [];
+                try { derived = JSON.parse(btn.dataset.derived || '[]'); } catch (e) {}
+                if (!derived.length) { return; }
+                var existing = ta.value
+                    .split(/\r?\n/)
+                    .map(function (s) { return s.trim(); })
+                    .filter(Boolean);
+                var seen   = Object.create(null);
+                var merged = [];
+                existing.concat(derived).forEach(function (k) {
+                    if (!seen[k]) { seen[k] = true; merged.push(k); }
+                });
+                ta.value = merged.join('\n');
+                ta.focus();
+                btn.disabled    = true;
+                btn.textContent = '<?php echo $added_label; ?>';
+            });
+        });
+        </script>
+        <?php
+    } else {
+        echo '<p style="margin-top:8px;"><em>' . esc_html__( 'No *JE_meta*.* targets found in field-mapping.json yet. Map some fields first, then this button will let you populate the textarea in one click.', 'jfb-wc-quotes-advanced' ) . '</em></p>';
+    }
+
+    if ( isset( $args['desc'] ) ) {
+        printf( '<p class="description">%s</p>', wp_kses_post( $args['desc'] ) );
+    }
 }
 function jfbwqa_render_field_checkbox( $args ) {
     $options = jfbwqa_get_options(); $key = $args['key']; $checked = checked($options[$key] ?? false, true, false);

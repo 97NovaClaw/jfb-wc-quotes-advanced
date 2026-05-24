@@ -4,6 +4,29 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [1.26.0] - 2026-05-24
+
+### Added
+- **"Auto-derive from current mapping" button** on the JetEngine Meta
+  Keys textarea (Settings -> JFB WC Quotes -> General Settings).
+  Scans the saved `field-mapping.json` for any `*JE_meta*.<key>`
+  targets and one-click merges the unique keys into the textarea.
+  Client-side merge only; nothing persists until "Save All Settings"
+  is clicked. The button is hidden when no JE-meta targets exist
+  in the mapping yet, with a hint message instead.
+
+### Why
+The textarea drives the mapping dropdown options and the email
+placeholder priority list. The mapping itself is the source of
+truth for routing form values, so a key being mapped without being
+listed in this textarea still works at submit time. But rebuilding
+the mapping table or expanding `{[<key>]}` placeholders is faster /
+more convenient when the textarea matches the mapping. This button
+keeps the two in sync without forcing the admin to retype keys
+they already used.
+
+---
+
 ## [1.25.0] - 2026-05-24
 
 ### Security
