@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI. HPOS-compatible; creates orders in-process via wc_create_order() (no REST credentials required).
- * Version:     2.3.1
+ * Version:     2.4.0
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '2.3.1' );
+define( 'JFBWQA_VERSION', '2.4.0' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_REGISTRY_OPTION', 'jfbwqa_event_registry' ); // Order-event registry (label, visible, order, source)
 define( 'JFBWQA_CUSTOM_EVENTS_OPTION', 'jfbwqa_custom_events' ); // User-created editable email events
@@ -139,6 +139,9 @@ function jfbwqa_get_options() {
         // notice (the ""X" has been added to your cart" bar + View Cart
         // button). Default false to preserve stock WC behavior.
         'disable_wc_add_to_cart_notice' => false,
+        // v2.4: when true, hide WordPress's "Custom Fields" metabox on the
+        // order edit screen (legacy + HPOS). Does not delete any meta.
+        'hide_order_custom_fields' => false,
         'email_subject'      => 'Your Estimate Request #{order_number}',
         'email_heading'      => 'Estimate Request Details',
         'email_reply_to'     => get_option('admin_email'),
@@ -2170,15 +2173,31 @@ function jfbwqa_replace_email_placeholders( $content, $order, $config_or_show_pr
    ============================================================================= */
 
 // --- Add Menu Item ---
+/**
+ * Stores/returns the admin page hook suffix so the enqueue check stays
+ * correct regardless of whether the page is a submenu or a top-level menu.
+ */
+function jfbwqa_settings_page_hook( $set = null ) {
+    static $hook = '';
+    if ( $set !== null ) {
+        $hook = $set;
+    }
+    return $hook;
+}
+
 add_action( 'admin_menu', 'jfbwqa_add_admin_menu' );
 function jfbwqa_add_admin_menu() {
-    add_options_page(
-        __('JFB WC Quotes Advanced Settings', 'jfb-wc-quotes-advanced'),
-        __('JFB WC Quotes', 'jfb-wc-quotes-advanced'), // Shorter menu title
+    // v2.4: promoted from a Settings submenu to a top-level menu with an icon.
+    $hook = add_menu_page(
+        __( 'JFB WC Quotes Advanced Settings', 'jfb-wc-quotes-advanced' ),
+        __( 'JFB WC Quotes', 'jfb-wc-quotes-advanced' ),
         'manage_options',
         JFBWQA_SETTINGS_SLUG,
-        'jfbwqa_render_settings_page'
+        'jfbwqa_render_settings_page',
+        'dashicons-clipboard',
+        56
     );
+    jfbwqa_settings_page_hook( $hook );
 }
 
 // --- Register Settings API Fields for General Settings ---
@@ -2312,6 +2331,25 @@ function jfbwqa_settings_init() {
         );
     }
 
+    // v2.4: Order Screen section (lives in the Advanced tab).
+    add_settings_section(
+        'jfbwqa_section_order_screen',
+        __( 'Order Screen', 'jfb-wc-quotes-advanced' ),
+        'jfbwqa_render_section_order_screen_desc',
+        JFBWQA_SETTINGS_SLUG
+    );
+    add_settings_field(
+        'hide_order_custom_fields',
+        __( 'Hide "Custom Fields" box', 'jfb-wc-quotes-advanced' ),
+        'jfbwqa_render_field_checkbox',
+        JFBWQA_SETTINGS_SLUG,
+        'jfbwqa_section_order_screen',
+        [
+            'key'  => 'hide_order_custom_fields',
+            'desc' => __( 'Hide the WordPress "Custom Fields" metabox on the order edit screen (legacy and HPOS). This only hides the UI; no order meta is deleted.', 'jfb-wc-quotes-advanced' ),
+        ]
+    );
+
     // Email Deliverability Section
     add_settings_section(
         'jfbwqa_section_deliverability',
@@ -2351,6 +2389,9 @@ function jfbwqa_render_section_quote_table_desc() {
 }
 function jfbwqa_render_section_deliverability_desc() {
     echo '<p>' . esc_html__('To significantly improve the chances of your estimate emails reaching the inbox and not being marked as spam, it is highly recommended to configure certain DNS records for your domain (the domain emails are sent from, e.g., luxeandpetals.com). This plugin now sends emails from "noreply@yourdomain.com".', 'jfb-wc-quotes-advanced') . '</p>';
+}
+function jfbwqa_render_section_order_screen_desc() {
+    echo '<p>' . esc_html__( 'Tidy up the WooCommerce order edit screen.', 'jfb-wc-quotes-advanced' ) . '</p>';
 }
 
 /**
@@ -2771,6 +2812,7 @@ function jfbwqa_sanitize_options( $input ) {
     $output['form_success_message'] = sanitize_textarea_field( $input['form_success_message'] ?? '' );
     // v1.30: checkbox toggle for suppressing the WC add-to-cart notice.
     $output['disable_wc_add_to_cart_notice'] = isset( $input['disable_wc_add_to_cart_notice'] ) ? true : false;
+    $output['hide_order_custom_fields']      = isset( $input['hide_order_custom_fields'] ) ? true : false;
     $output['email_subject']   = sanitize_text_field($input['email_subject'] ?? '');
     $output['email_heading']   = sanitize_text_field($input['email_heading'] ?? '');
     $output['email_reply_to']  = sanitize_email($input['email_reply_to'] ?? '');
@@ -2807,7 +2849,7 @@ function jfbwqa_sanitize_options( $input ) {
 
 add_action( 'admin_enqueue_scripts', 'jfbwqa_enqueue_settings_app_assets' );
 function jfbwqa_enqueue_settings_app_assets( $hook ) {
-    if ( $hook !== 'settings_page_' . JFBWQA_SETTINGS_SLUG ) {
+    if ( $hook !== jfbwqa_settings_page_hook() ) {
         return;
     }
 
@@ -3285,7 +3327,7 @@ function jfbwqa_render_settings_page() {
 
                 <div class="jfbwqa-pane-panel jfbwqa-pane-panel--advanced" data-panel="advanced" hidden>
                     <h2><?php esc_html_e( 'Advanced', 'jfb-wc-quotes-advanced' ); ?></h2>
-                    <?php jfbwqa_render_settings_sections_by_id( [ 'jfbwqa_section_deliverability' ] ); ?>
+                    <?php jfbwqa_render_settings_sections_by_id( [ 'jfbwqa_section_order_screen', 'jfbwqa_section_deliverability' ] ); ?>
                 </div>
 
                     <div class="jfbwqa-save-bar">
@@ -3448,6 +3490,23 @@ function jfbwqa_resolve_table_config_for_send( $order, $email_type ) {
  * Register the Email Action Composer metabox on both legacy and HPOS
  * order edit screens.
  */
+/**
+ * v2.4: optionally remove the WordPress "Custom Fields" metabox from the
+ * order edit screen (legacy + HPOS). UI-only; no meta is deleted. Runs
+ * late so it wins over WP/WC registering the box.
+ */
+add_action( 'add_meta_boxes', 'jfbwqa_maybe_hide_order_custom_fields', 99 );
+function jfbwqa_maybe_hide_order_custom_fields() {
+    $opts = jfbwqa_get_options();
+    if ( empty( $opts['hide_order_custom_fields'] ) ) {
+        return;
+    }
+    $screens = array_unique( [ 'shop_order', jfbwqa_get_order_screen_id() ] );
+    foreach ( $screens as $screen ) {
+        remove_meta_box( 'postcustom', $screen, 'normal' );
+    }
+}
+
 add_action( 'add_meta_boxes', 'jfbwqa_register_action_composer_metabox' );
 function jfbwqa_register_action_composer_metabox() {
     add_meta_box(

@@ -4,6 +4,21 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [2.4.0] - 2026-02-28
+
+### Added
+- **Top-level admin menu.** The plugin admin moved out of Settings → it now
+  has its own top-level menu item ("JFB WC Quotes") with a clipboard icon.
+  The page slug is unchanged, so existing links/bookmarks still work, and
+  the asset enqueue now keys off the actual page hook regardless of menu
+  location.
+- **"Hide Custom Fields box" toggle** (Advanced tab → Order Screen). Hides
+  the WordPress "Custom Fields" metabox on the order edit screen on both
+  legacy and HPOS stores. UI-only — no order meta is deleted, and it's
+  reversible by unchecking.
+
+---
+
 ## [2.3.1] - 2026-02-28
 
 ### Fixed
