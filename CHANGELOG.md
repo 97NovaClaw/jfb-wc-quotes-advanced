@@ -4,6 +4,61 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] - 2026-02-28
+
+### Added
+- **Intake / Form & Cart tab** — consolidates General settings, Form
+  Submission (success message + cart-notice toggle), JetForm JSON upload,
+  and the field-mapping table UI.
+- **Advanced tab** — Email Deliverability (DNS) guidance moved out of the
+  flat settings dump.
+- **Read-only template viewer** on plugin event tabs (Estimate Request +
+  Prepared Quote) showing resolved paths (theme override vs plugin) and
+  syntax-styled PHP source for `customer-estimate-request.php` and
+  `email-order-items.php`.
+
+### Changed
+- Estimate + Prepared Quote email/table settings now render inside their
+  respective order-event tabs (same `jfbwqa_options` keys — no migration).
+- WooCommerce-owned order actions show reorder/hide/rename only plus an
+  informational note.
+- Retired the single-page `do_settings_sections()` dump and the temporary
+  Settings catch-all tab.
+
+---
+
+## [2.1.0] - 2026-02-28
+
+### Changed
+- Per-event settings panels for `jfbwqa_send_estimate_email` (email +
+  `est_table_*`) and `jfbwqa_send_prepared_quote` (`quote_*` + table
+  toggles) inside the tabbed admin app.
+- WooCommerce core/other-plugin events: dropdown control only; settings
+  owned by WooCommerce.
+
+---
+
+## [2.0.0] - 2026-02-28
+
+### Added
+- **`jfbwqa_event_registry` option** — stores custom label, visibility,
+  sort order, and source (`plugin` | `woocommerce`) per order-action slug.
+  Discovery merges registered `woocommerce_order_actions` on each load
+  (append new, drop stale, preserve overrides).
+- **Late `woocommerce_order_actions` filter (priority 99)** — applies
+  registry ordering, visibility, and renamed labels to the order edit
+  dropdown. Email Action Composer still keys off slug, not label.
+- **Tabbed Order Events admin app** (Settings → JFB WC Quotes):
+  - Left rail: jQuery UI Sortable list with drag handle, eye toggle, inline
+    rename.
+  - AJAX auto-save (`jfbwqa_registry_reorder`, `_toggle_visible`, `_rename`).
+  - Right pane event tabs (placeholder settings in 2.0; filled in 2.1+).
+
+### Changed
+- Plugin version 2.x reflects the admin UI rearchitecture.
+
+---
+
 ## [1.30.0] - 2026-05-30
 
 ### Added

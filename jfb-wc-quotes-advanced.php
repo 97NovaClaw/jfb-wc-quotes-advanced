@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI. HPOS-compatible; creates orders in-process via wc_create_order() (no REST credentials required).
- * Version:     1.30.0
+ * Version:     2.2.0
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -18,8 +18,9 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '1.30.0' );
+define( 'JFBWQA_VERSION', '2.2.0' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
+define( 'JFBWQA_REGISTRY_OPTION', 'jfbwqa_event_registry' ); // Order-event registry (label, visible, order, source)
 define( 'JFBWQA_SETTINGS_SLUG', 'jfbwqa-settings' ); // Menu slug for settings page
 
 /* =============================================================================
@@ -1088,6 +1089,190 @@ function jfbwqa_add_order_action( $actions ) {
     $actions['jfbwqa_send_prepared_quote'] = __( 'Send Prepared Quote Email', 'jfb-wc-quotes-advanced' ); // New Action
     return $actions;
 }
+
+/* =============================================================================
+   7b) Order Event Registry (v2.0) - discovery, merge, dropdown control
+   ============================================================================= */
+
+/**
+ * Slugs for order actions registered by this plugin.
+ * Kept inline here so registry helpers do not depend on later definitions.
+ */
+function jfbwqa_get_plugin_event_slugs() {
+    return [
+        'jfbwqa_send_estimate_email',
+        'jfbwqa_send_prepared_quote',
+    ];
+}
+
+/**
+ * Collect all registered WooCommerce order actions without applying registry
+ * ordering/visibility (those run at priority 99 below).
+ *
+ * @return array<string,string> slug => default label
+ */
+function jfbwqa_discover_order_actions() {
+    $had_filter = remove_filter( 'woocommerce_order_actions', 'jfbwqa_apply_event_registry_to_actions', 99 );
+    $actions    = apply_filters( 'woocommerce_order_actions', [], null );
+    if ( $had_filter ) {
+        add_filter( 'woocommerce_order_actions', 'jfbwqa_apply_event_registry_to_actions', 99 );
+    }
+    return is_array( $actions ) ? $actions : [];
+}
+
+/**
+ * Merge discovered order actions into the persisted registry.
+ * Preserves label/visible/order overrides, appends newly-seen actions, drops stale.
+ *
+ * @param bool $persist When true, writes back to wp_options when the merge changed.
+ * @return array<string,array> slug => entry
+ */
+function jfbwqa_get_merged_event_registry( $persist = true ) {
+    $stored = get_option( JFBWQA_REGISTRY_OPTION, [] );
+    if ( ! is_array( $stored ) ) {
+        $stored = [];
+    }
+
+    $discovered   = jfbwqa_discover_order_actions();
+    $plugin_slugs = jfbwqa_get_plugin_event_slugs();
+    $merged       = [];
+    $max_order    = -1;
+
+    foreach ( $stored as $entry ) {
+        if ( is_array( $entry ) && isset( $entry['order'] ) ) {
+            $max_order = max( $max_order, (int) $entry['order'] );
+        }
+    }
+    $order_counter = $max_order + 1;
+
+    foreach ( $discovered as $slug => $default_label ) {
+        $slug          = sanitize_key( $slug );
+        $default_label = wp_strip_all_tags( (string) $default_label );
+        $source        = in_array( $slug, $plugin_slugs, true ) ? 'plugin' : 'woocommerce';
+
+        if ( isset( $stored[ $slug ] ) && is_array( $stored[ $slug ] ) ) {
+            $prev          = $stored[ $slug ];
+            $merged[ $slug ] = [
+                'label'         => isset( $prev['label'] ) ? sanitize_text_field( (string) $prev['label'] ) : $default_label,
+                'default_label' => $default_label,
+                'visible'       => ! isset( $prev['visible'] ) || (bool) $prev['visible'],
+                'order'         => isset( $prev['order'] ) ? (int) $prev['order'] : $order_counter++,
+                'source'        => isset( $prev['source'] ) ? sanitize_key( (string) $prev['source'] ) : $source,
+            ];
+        } else {
+            $merged[ $slug ] = [
+                'label'         => $default_label,
+                'default_label' => $default_label,
+                'visible'       => true,
+                'order'         => $order_counter++,
+                'source'        => $source,
+            ];
+        }
+    }
+
+    uasort(
+        $merged,
+        static function ( $a, $b ) {
+            if ( $a['order'] === $b['order'] ) {
+                return 0;
+            }
+            return ( $a['order'] < $b['order'] ) ? -1 : 1;
+        }
+    );
+
+    if ( $persist ) {
+        $changed = count( $merged ) !== count( $stored );
+        if ( ! $changed ) {
+            foreach ( $merged as $slug => $entry ) {
+                if ( ! isset( $stored[ $slug ] ) ) {
+                    $changed = true;
+                    break;
+                }
+                if ( ( $stored[ $slug ]['default_label'] ?? '' ) !== $entry['default_label'] ) {
+                    $changed = true;
+                    break;
+                }
+            }
+        }
+        if ( $changed ) {
+            update_option( JFBWQA_REGISTRY_OPTION, $merged, false );
+        }
+    }
+
+    return $merged;
+}
+
+/**
+ * Persist the full registry array (already sanitized by caller).
+ */
+function jfbwqa_save_event_registry( array $registry ) {
+    update_option( JFBWQA_REGISTRY_OPTION, $registry, false );
+}
+
+/**
+ * Late filter: hide events, reorder, and apply custom labels to the dropdown.
+ * The Email Action Composer metabox keys off action slug, not label.
+ */
+add_filter( 'woocommerce_order_actions', 'jfbwqa_apply_event_registry_to_actions', 99 );
+function jfbwqa_apply_event_registry_to_actions( $actions ) {
+    if ( ! is_array( $actions ) || empty( $actions ) ) {
+        return $actions;
+    }
+
+    $registry = jfbwqa_get_merged_event_registry( false );
+    $entries  = [];
+
+    foreach ( $registry as $slug => $entry ) {
+        if ( ! isset( $actions[ $slug ] ) ) {
+            continue;
+        }
+        if ( empty( $entry['visible'] ) ) {
+            continue;
+        }
+        $label = ! empty( $entry['label'] ) ? $entry['label'] : $actions[ $slug ];
+        $entries[] = [
+            'slug'  => $slug,
+            'order' => (int) ( $entry['order'] ?? 0 ),
+            'label' => $label,
+        ];
+    }
+
+    // Safety net: include any action missing from registry (should not happen post-merge).
+    foreach ( $actions as $slug => $label ) {
+        $found = false;
+        foreach ( $entries as $entry ) {
+            if ( $entry['slug'] === $slug ) {
+                $found = true;
+                break;
+            }
+        }
+        if ( ! $found ) {
+            $entries[] = [
+                'slug'  => $slug,
+                'order' => PHP_INT_MAX,
+                'label' => $label,
+            ];
+        }
+    }
+
+    usort(
+        $entries,
+        static function ( $a, $b ) {
+            if ( $a['order'] === $b['order'] ) {
+                return strcmp( $a['slug'], $b['slug'] );
+            }
+            return ( $a['order'] < $b['order'] ) ? -1 : 1;
+        }
+    );
+
+    $result = [];
+    foreach ( $entries as $entry ) {
+        $result[ $entry['slug'] ] = $entry['label'];
+    }
+
+    return $result;
+}
+
 add_action( 'woocommerce_order_action_jfbwqa_send_estimate_email', 'jfbwqa_handle_order_action' );
 add_action( 'woocommerce_order_action_jfbwqa_send_prepared_quote', 'jfbwqa_handle_send_prepared_quote_action' ); // Handler now active
 
@@ -1897,11 +2082,137 @@ function jfbwqa_render_section_est_table_desc() {
     echo '<p>' . esc_html__( 'Recommended: leave most rows OFF for the acknowledgement email; you will surface pricing in the prepared-quote email instead.', 'jfb-wc-quotes-advanced' ) . '</p>';
 }
 function jfbwqa_render_section_quote_table_desc() {
-    echo '<p>' . esc_html__( 'These checkboxes control what appears in the [Order Details Table] placeholder when the prepared-quote email is sent. They serve as defaults; the per-send modal on the order edit screen can override them on a per-quote basis.', 'jfb-wc-quotes-advanced' ) . '</p>';
+    echo '<p>' . esc_html__( 'These checkboxes control what appears in the [Order Details Table] placeholder when the prepared-quote email is sent. They serve as defaults; the Email Action Composer metabox on the order edit screen can override them per send.', 'jfb-wc-quotes-advanced' ) . '</p>';
     echo '<p>' . esc_html__( 'Recommended: enable line totals, subtotal, shipping, fees, and grand total. Discount and tax can be enabled if your store applies them.', 'jfb-wc-quotes-advanced' ) . '</p>';
 }
 function jfbwqa_render_section_deliverability_desc() {
     echo '<p>' . esc_html__('To significantly improve the chances of your estimate emails reaching the inbox and not being marked as spam, it is highly recommended to configure certain DNS records for your domain (the domain emails are sent from, e.g., luxeandpetals.com). This plugin now sends emails from "noreply@yourdomain.com".', 'jfb-wc-quotes-advanced') . '</p>';
+}
+
+/**
+ * Map order-action slug -> Settings API section IDs rendered in that event tab.
+ */
+function jfbwqa_get_event_settings_sections( $slug ) {
+    $map = [
+        'jfbwqa_send_estimate_email' => [ 'jfbwqa_section_email', 'jfbwqa_section_est_table' ],
+        'jfbwqa_send_prepared_quote' => [ 'jfbwqa_section_quote_email', 'jfbwqa_section_quote_table' ],
+    ];
+    return $map[ $slug ] ?? [];
+}
+
+/**
+ * Render selected Settings API sections (title + fields table).
+ */
+function jfbwqa_render_settings_sections_by_id( array $section_ids ) {
+    global $wp_settings_sections;
+
+    if ( empty( $wp_settings_sections[ JFBWQA_SETTINGS_SLUG ] ) ) {
+        return;
+    }
+
+    foreach ( $section_ids as $section_id ) {
+        if ( empty( $wp_settings_sections[ JFBWQA_SETTINGS_SLUG ][ $section_id ] ) ) {
+            continue;
+        }
+        $section = $wp_settings_sections[ JFBWQA_SETTINGS_SLUG ][ $section_id ];
+        if ( ! empty( $section['title'] ) ) {
+            echo '<h3>' . esc_html( $section['title'] ) . '</h3>';
+        }
+        if ( ! empty( $section['callback'] ) ) {
+            call_user_func( $section['callback'], $section );
+        }
+        echo '<table class="form-table" role="presentation">';
+        do_settings_fields( JFBWQA_SETTINGS_SLUG, $section_id );
+        echo '</table>';
+    }
+}
+
+/**
+ * Resolve PHP template files tied to a plugin order event (for read-only viewer).
+ *
+ * @return array<int,array{label:string,resolved:string,source:string}>
+ */
+function jfbwqa_get_event_template_files( $slug ) {
+    $plugin_base = plugin_dir_path( __FILE__ ) . 'woocommerce/';
+    $theme_base  = get_stylesheet_directory() . '/woocommerce/';
+    $files       = [];
+
+    $specs = [
+        'jfbwqa_send_estimate_email' => [
+            [ 'label' => __( 'Estimate email wrapper', 'jfb-wc-quotes-advanced' ), 'relative' => 'emails/customer-estimate-request.php' ],
+            [ 'label' => __( 'Order items table partial', 'jfb-wc-quotes-advanced' ), 'relative' => 'emails/email-order-items.php' ],
+        ],
+        'jfbwqa_send_prepared_quote' => [
+            [ 'label' => __( 'Quote email wrapper (shared)', 'jfb-wc-quotes-advanced' ), 'relative' => 'emails/customer-estimate-request.php' ],
+            [ 'label' => __( 'Order items table partial', 'jfb-wc-quotes-advanced' ), 'relative' => 'emails/email-order-items.php' ],
+        ],
+    ];
+
+    if ( empty( $specs[ $slug ] ) ) {
+        return [];
+    }
+
+    foreach ( $specs[ $slug ] as $spec ) {
+        $relative   = $spec['relative'];
+        $theme_path = $theme_base . $relative;
+        $plugin_path = $plugin_base . $relative;
+
+        if ( file_exists( $theme_path ) ) {
+            $resolved = $theme_path;
+            $source   = __( 'Theme override', 'jfb-wc-quotes-advanced' );
+        } elseif ( file_exists( $plugin_path ) ) {
+            $resolved = $plugin_path;
+            $source   = __( 'Plugin', 'jfb-wc-quotes-advanced' );
+        } else {
+            $resolved = $plugin_path;
+            $source   = __( 'Missing', 'jfb-wc-quotes-advanced' );
+        }
+
+        $files[] = [
+            'label'    => $spec['label'],
+            'resolved' => $resolved,
+            'source'   => $source,
+        ];
+    }
+
+    return $files;
+}
+
+/**
+ * Read-only syntax-highlighted-ish template viewer for an event tab.
+ */
+function jfbwqa_render_event_template_viewer( $slug ) {
+    $files = jfbwqa_get_event_template_files( $slug );
+    if ( empty( $files ) ) {
+        return;
+    }
+
+    echo '<div class="jfbwqa-template-viewer">';
+    echo '<h3>' . esc_html__( 'Email templates (read-only)', 'jfb-wc-quotes-advanced' ) . '</h3>';
+    echo '<p class="description">' . esc_html__( 'Resolved paths on this site. Editing is deferred; copy to your theme to override.', 'jfb-wc-quotes-advanced' ) . '</p>';
+
+    foreach ( $files as $file ) {
+        echo '<div class="jfbwqa-template-file">';
+        echo '<div class="jfbwqa-template-file-meta">';
+        echo '<strong>' . esc_html( $file['label'] ) . '</strong>';
+        echo ' &middot; <span class="jfbwqa-template-source">' . esc_html( $file['source'] ) . '</span><br>';
+        echo '<code class="jfbwqa-template-path">' . esc_html( $file['resolved'] ) . '</code>';
+        echo '</div>';
+
+        if ( file_exists( $file['resolved'] ) && is_readable( $file['resolved'] ) ) {
+            $contents = file_get_contents( $file['resolved'] );
+            if ( false !== $contents ) {
+                echo '<pre class="jfbwqa-template-code"><code>' . esc_html( $contents ) . '</code></pre>';
+            } else {
+                echo '<p class="description">' . esc_html__( 'Could not read template file.', 'jfb-wc-quotes-advanced' ) . '</p>';
+            }
+        } else {
+            echo '<p class="description">' . esc_html__( 'Template file not found.', 'jfb-wc-quotes-advanced' ) . '</p>';
+        }
+        echo '</div>';
+    }
+
+    echo '</div>';
 }
 
 function jfbwqa_render_field_deliverability_info() {
@@ -2108,6 +2419,137 @@ function jfbwqa_sanitize_options( $input ) {
     return $output;
 }
 
+/* --- v2.0: Order Event Registry admin assets + AJAX auto-save --- */
+
+add_action( 'admin_enqueue_scripts', 'jfbwqa_enqueue_settings_app_assets' );
+function jfbwqa_enqueue_settings_app_assets( $hook ) {
+    if ( $hook !== 'settings_page_' . JFBWQA_SETTINGS_SLUG ) {
+        return;
+    }
+
+    wp_enqueue_script( 'jquery-ui-sortable' );
+    wp_enqueue_style(
+        'jfbwqa-admin-settings-app',
+        plugin_dir_url( __FILE__ ) . 'assets/css/admin-settings-app.css',
+        [],
+        JFBWQA_VERSION
+    );
+    wp_enqueue_script(
+        'jfbwqa-admin-settings-app',
+        plugin_dir_url( __FILE__ ) . 'assets/js/admin-settings-app.js',
+        [ 'jquery', 'jquery-ui-sortable' ],
+        JFBWQA_VERSION,
+        true
+    );
+    wp_localize_script(
+        'jfbwqa-admin-settings-app',
+        'jfbwqaSettingsApp',
+        [
+            'ajaxUrl' => admin_url( 'admin-ajax.php' ),
+            'nonce'   => wp_create_nonce( 'jfbwqa_registry' ),
+            'i18n'    => [
+                'saved'   => __( 'Order events saved.', 'jfb-wc-quotes-advanced' ),
+                'error'   => __( 'Could not save order events. Please try again.', 'jfb-wc-quotes-advanced' ),
+                'saving'  => __( 'Saving…', 'jfb-wc-quotes-advanced' ),
+                'show'    => __( 'Show in order actions dropdown', 'jfb-wc-quotes-advanced' ),
+                'hide'    => __( 'Hide from order actions dropdown', 'jfb-wc-quotes-advanced' ),
+                'settings'=> __( 'Settings', 'jfb-wc-quotes-advanced' ),
+            ],
+        ]
+    );
+}
+
+/**
+ * Verify capability + nonce for registry AJAX handlers.
+ */
+function jfbwqa_registry_ajax_verify() {
+    if ( ! current_user_can( 'manage_options' ) ) {
+        wp_send_json_error( [ 'message' => __( 'Forbidden.', 'jfb-wc-quotes-advanced' ) ], 403 );
+    }
+    check_ajax_referer( 'jfbwqa_registry', 'nonce' );
+}
+
+add_action( 'wp_ajax_jfbwqa_registry_reorder', 'jfbwqa_ajax_registry_reorder' );
+function jfbwqa_ajax_registry_reorder() {
+    jfbwqa_registry_ajax_verify();
+
+    $slugs = isset( $_POST['slugs'] ) ? (array) wp_unslash( $_POST['slugs'] ) : [];
+    $slugs = array_values( array_filter( array_map( 'sanitize_key', $slugs ) ) );
+
+    if ( empty( $slugs ) ) {
+        wp_send_json_error( [ 'message' => __( 'No events provided.', 'jfb-wc-quotes-advanced' ) ] );
+    }
+
+    $registry = jfbwqa_get_merged_event_registry( false );
+    $order    = 0;
+    foreach ( $slugs as $slug ) {
+        if ( isset( $registry[ $slug ] ) ) {
+            $registry[ $slug ]['order'] = $order++;
+        }
+    }
+
+    jfbwqa_save_event_registry( $registry );
+    wp_send_json_success( [ 'registry' => $registry ] );
+}
+
+add_action( 'wp_ajax_jfbwqa_registry_toggle_visible', 'jfbwqa_ajax_registry_toggle_visible' );
+function jfbwqa_ajax_registry_toggle_visible() {
+    jfbwqa_registry_ajax_verify();
+
+    $slug    = isset( $_POST['slug'] ) ? sanitize_key( wp_unslash( $_POST['slug'] ) ) : '';
+    $visible = isset( $_POST['visible'] ) ? (bool) wp_unslash( $_POST['visible'] ) : true;
+
+    if ( $slug === '' ) {
+        wp_send_json_error( [ 'message' => __( 'Missing event slug.', 'jfb-wc-quotes-advanced' ) ] );
+    }
+
+    $registry = jfbwqa_get_merged_event_registry( false );
+    if ( ! isset( $registry[ $slug ] ) ) {
+        wp_send_json_error( [ 'message' => __( 'Unknown event.', 'jfb-wc-quotes-advanced' ) ] );
+    }
+
+    $registry[ $slug ]['visible'] = $visible;
+    jfbwqa_save_event_registry( $registry );
+
+    wp_send_json_success(
+        [
+            'slug'    => $slug,
+            'visible' => $visible,
+        ]
+    );
+}
+
+add_action( 'wp_ajax_jfbwqa_registry_rename', 'jfbwqa_ajax_registry_rename' );
+function jfbwqa_ajax_registry_rename() {
+    jfbwqa_registry_ajax_verify();
+
+    $slug  = isset( $_POST['slug'] ) ? sanitize_key( wp_unslash( $_POST['slug'] ) ) : '';
+    $label = isset( $_POST['label'] ) ? sanitize_text_field( wp_unslash( $_POST['label'] ) ) : '';
+
+    if ( $slug === '' ) {
+        wp_send_json_error( [ 'message' => __( 'Missing event slug.', 'jfb-wc-quotes-advanced' ) ] );
+    }
+
+    $registry = jfbwqa_get_merged_event_registry( false );
+    if ( ! isset( $registry[ $slug ] ) ) {
+        wp_send_json_error( [ 'message' => __( 'Unknown event.', 'jfb-wc-quotes-advanced' ) ] );
+    }
+
+    if ( $label === '' ) {
+        $label = $registry[ $slug ]['default_label'];
+    }
+
+    $registry[ $slug ]['label'] = $label;
+    jfbwqa_save_event_registry( $registry );
+
+    wp_send_json_success(
+        [
+            'slug'  => $slug,
+            'label' => $label,
+        ]
+    );
+}
+
 // --- Render the Main Settings Page ---
 function jfbwqa_render_settings_page() {
     if ( ! current_user_can( 'manage_options' ) ) return;
@@ -2274,79 +2716,153 @@ function jfbwqa_render_settings_page() {
         });
     ");
 
+    $event_registry = jfbwqa_get_merged_event_registry();
+
     ?>
-    <div class="wrap">
+    <div class="wrap jfbwqa-settings-wrap">
         <h1><?php echo esc_html( get_admin_page_title() ); ?></h1>
 
         <?php
-            // Display messages from file upload or populate action
             echo $file_upload_message;
             echo $populate_action_message;
-            // Display standard Settings API update messages (like "Settings saved.")
             settings_errors();
-             // Display messages specifically added for mapping save status
-            settings_errors('jfbwqa_mapping');
+            settings_errors( 'jfbwqa_mapping' );
         ?>
 
-        <form action="options.php" method="post" enctype="multipart/form-data">
-            <?php
-            // Output security fields for the registered setting group
-            settings_fields( 'jfbwqa_settings_group' );
+        <p class="description jfbwqa-settings-intro">
+            <?php esc_html_e( 'Drag order events to control the WooCommerce order-actions dropdown. Each tab holds that event\'s settings; Intake covers form/cart wiring; Advanced covers deliverability.', 'jfb-wc-quotes-advanced' ); ?>
+        </p>
 
-            // Output standard settings sections (General, Email)
-            do_settings_sections( JFBWQA_SETTINGS_SLUG );
-            ?>
+        <div id="jfbwqa-registry-status" class="jfbwqa-registry-status" aria-live="polite"></div>
 
-            <hr>
-            <h2><?php esc_html_e('Field Mapping Setup', 'jfb-wc-quotes-advanced'); ?></h2>
-            <table class="form-table">
-                 <tr valign="top">
-                    <th scope="row"><?php esc_html_e('Upload JetForm JSON', 'jfb-wc-quotes-advanced'); ?></th>
-                    <td>
-                        <input type="file" name="jfbwqa_jetform_json" id="jfbwqa_jetform_json" accept=".json">
-                        <p class="description"><?php esc_html_e('Export your JetForm (use "Export Form"), upload the JSON file here, and click "Save All Settings". This makes the form available for the "Populate Mapping Table" button below.', 'jfb-wc-quotes-advanced'); ?> <br> <?php printf(__('Current file: %s', 'jfb-wc-quotes-advanced'), '<code>' . esc_html(basename(jfbwqa_jetform_path())) . (file_exists(jfbwqa_jetform_path()) ? ' (exists)' : ' (not found)') . '</code>'); ?></p>
-                    </td>
-                 </tr>
-            </table>
+        <div class="jfbwqa-admin-app">
+            <aside class="jfbwqa-admin-rail" aria-label="<?php esc_attr_e( 'Order events', 'jfb-wc-quotes-advanced' ); ?>">
+                <div class="jfbwqa-rail-header"><?php esc_html_e( 'Order Events', 'jfb-wc-quotes-advanced' ); ?></div>
+                <ul id="jfbwqa-event-registry" class="jfbwqa-event-list">
+                    <?php foreach ( $event_registry as $slug => $entry ) :
+                        $is_visible = ! empty( $entry['visible'] );
+                        $source     = $entry['source'] ?? 'woocommerce';
+                        ?>
+                    <li
+                        class="jfbwqa-event-row<?php echo $is_visible ? '' : ' is-hidden-event'; ?>"
+                        data-slug="<?php echo esc_attr( $slug ); ?>"
+                        data-source="<?php echo esc_attr( $source ); ?>"
+                    >
+                        <span class="dashicons dashicons-menu jfbwqa-drag-handle" title="<?php esc_attr_e( 'Drag to reorder', 'jfb-wc-quotes-advanced' ); ?>"></span>
+                        <button
+                            type="button"
+                            class="jfbwqa-eye-toggle"
+                            aria-pressed="<?php echo $is_visible ? 'true' : 'false'; ?>"
+                            title="<?php echo $is_visible ? esc_attr__( 'Hide from order actions dropdown', 'jfb-wc-quotes-advanced' ) : esc_attr__( 'Show in order actions dropdown', 'jfb-wc-quotes-advanced' ); ?>"
+                        >
+                            <span class="dashicons <?php echo $is_visible ? 'dashicons-visibility' : 'dashicons-hidden'; ?>"></span>
+                        </button>
+                        <input
+                            type="text"
+                            class="jfbwqa-event-label"
+                            value="<?php echo esc_attr( $entry['label'] ); ?>"
+                            data-default-label="<?php echo esc_attr( $entry['default_label'] ); ?>"
+                            aria-label="<?php esc_attr_e( 'Event label', 'jfb-wc-quotes-advanced' ); ?>"
+                        />
+                    </li>
+                    <?php endforeach; ?>
+                </ul>
+                <div class="jfbwqa-rail-tabs">
+                    <button type="button" class="button jfbwqa-rail-tab jfbwqa-rail-tab--intake is-active" data-panel="intake">
+                        <?php esc_html_e( 'Intake / Form & Cart', 'jfb-wc-quotes-advanced' ); ?>
+                    </button>
+                    <button type="button" class="button jfbwqa-rail-tab jfbwqa-rail-tab--advanced" data-panel="advanced">
+                        <?php esc_html_e( 'Advanced', 'jfb-wc-quotes-advanced' ); ?>
+                    </button>
+                </div>
+            </aside>
 
-            <?php // The dynamically generated mapping table will be placed here ?>
-            <div id="jfbwqa-mapping-table-container">
-                 <?php
-                 // If the populate button was just clicked, inject the generated HTML
-                 if ( ! empty( $populate_table_html ) ) {
-                      echo $populate_table_html;
-                 } else {
-                     // If not populating now, try to display the *current* mapping if it exists
-                     $current_mapping = jfbwqa_read_mapping();
-                     if (!empty($current_mapping)) {
-                         echo '<p>' . __('Mapping table not populated in this request. Displaying previously saved mapping loaded from <code>field-mapping.json</code>. Click "Populate Mapping Table" below to regenerate based on the latest uploaded JSON.', 'jfb-wc-quotes-advanced') . '</p>';
-                         // Ideally, render a static view of the current mapping here,
-                         // or just instruct user to click Populate. For simplicity, just showing the message.
-                         // You could potentially generate the table here based *only* on the mapping file,
-                         // but you wouldn't have the JFB field labels without the source JSON.
-                     } else {
-                          echo '<p>' . __('Upload a JetForm JSON and click "Save All Settings", then click "Populate Mapping Table" below to configure field mapping.', 'jfb-wc-quotes-advanced') . '</p>';
-                     }
-                 }
-                 ?>
-            </div>
+            <div class="jfbwqa-admin-pane">
+                <form action="options.php" method="post" enctype="multipart/form-data" class="jfbwqa-settings-form">
+                    <?php settings_fields( 'jfbwqa_settings_group' ); ?>
 
-            <?php // Main Save Button for ALL settings (General + Mapping) ?>
-            <?php submit_button( __('Save All Settings', 'jfb-wc-quotes-advanced') ); ?>
+                <?php foreach ( $event_registry as $slug => $entry ) :
+                    $source       = $entry['source'] ?? 'woocommerce';
+                    $is_plugin    = ( $source === 'plugin' );
+                    $event_sections = jfbwqa_get_event_settings_sections( $slug );
+                    ?>
+                <div class="jfbwqa-pane-panel jfbwqa-pane-panel--event" data-slug="<?php echo esc_attr( $slug ); ?>" hidden>
+                    <h2><?php echo esc_html( $entry['label'] ); ?></h2>
+                    <p class="jfbwqa-event-meta">
+                        <code><?php echo esc_html( $slug ); ?></code>
+                    </p>
 
-        </form>
+                    <?php if ( $is_plugin && ! empty( $event_sections ) ) : ?>
+                        <?php jfbwqa_render_settings_sections_by_id( $event_sections ); ?>
+                        <?php jfbwqa_render_event_template_viewer( $slug ); ?>
+                    <?php else : ?>
+                        <div class="notice notice-info inline">
+                            <p><?php esc_html_e( 'Settings for this action are owned by WooCommerce or another plugin. You can reorder, rename, or hide it from the dropdown using the controls in the left rail.', 'jfb-wc-quotes-advanced' ); ?></p>
+                        </div>
+                    <?php endif; ?>
+                </div>
+                <?php endforeach; ?>
 
-        <hr>
-        <?php // Separate form for the "Populate" action ?>
-        <form method="post" id="jfbwqa-populate-form" style="margin-top: 20px;">
-             <?php wp_nonce_field('jfbwqa_admin_nonce_populate', 'jfbwqa_populate_nonce'); ?>
-             <input type="submit" class="button" name="jfbwqa_populate_table" value="<?php esc_attr_e('Populate Mapping Table', 'jfb-wc-quotes-advanced'); ?>" <?php echo !file_exists(jfbwqa_jetform_path()) ? 'disabled' : ''; ?>>
-             <p class="description"><?php esc_html_e('Click this AFTER uploading a JSON file and saving settings. This reads the uploaded file (jetform-latest.json) and generates the mapping table above based on its fields.', 'jfb-wc-quotes-advanced'); ?> <?php if (!file_exists(jfbwqa_jetform_path())) echo '<strong>' . __('(Disabled until a JSON file is uploaded and saved)', 'jfb-wc-quotes-advanced') . '</strong>'; ?></p>
-        </form>
+                <div class="jfbwqa-pane-panel jfbwqa-pane-panel--intake is-active" data-panel="intake">
+                    <h2><?php esc_html_e( 'Intake / Form & Cart', 'jfb-wc-quotes-advanced' ); ?></h2>
+                    <?php
+                    jfbwqa_render_settings_sections_by_id( [ 'jfbwqa_section_general', 'jfbwqa_section_form' ] );
+                    ?>
+                    <hr>
+                    <h3><?php esc_html_e( 'Field Mapping Setup', 'jfb-wc-quotes-advanced' ); ?></h3>
+                    <table class="form-table" role="presentation">
+                        <tr valign="top">
+                            <th scope="row"><?php esc_html_e( 'Upload JetForm JSON', 'jfb-wc-quotes-advanced' ); ?></th>
+                            <td>
+                                <input type="file" name="jfbwqa_jetform_json" id="jfbwqa_jetform_json" accept=".json">
+                                <p class="description"><?php esc_html_e( 'Export your JetForm (use "Export Form"), upload the JSON file here, and click "Save All Settings". This makes the form available for the "Populate Mapping Table" button below.', 'jfb-wc-quotes-advanced' ); ?> <br> <?php printf( __( 'Current file: %s', 'jfb-wc-quotes-advanced' ), '<code>' . esc_html( basename( jfbwqa_jetform_path() ) ) . ( file_exists( jfbwqa_jetform_path() ) ? ' (exists)' : ' (not found)' ) . '</code>' ); ?></p>
+                            </td>
+                        </tr>
+                    </table>
+                    <div id="jfbwqa-mapping-table-container">
+                        <?php
+                        if ( ! empty( $populate_table_html ) ) {
+                            echo $populate_table_html;
+                        } else {
+                            $current_mapping = jfbwqa_read_mapping();
+                            if ( ! empty( $current_mapping ) ) {
+                                echo '<p>' . esc_html__( 'Mapping table not populated in this request. Previously saved mapping is in field-mapping.json. Click "Populate Mapping Table" below to regenerate from the latest uploaded JSON.', 'jfb-wc-quotes-advanced' ) . '</p>';
+                            } else {
+                                echo '<p>' . esc_html__( 'Upload a JetForm JSON and click "Save All Settings", then click "Populate Mapping Table" below to configure field mapping.', 'jfb-wc-quotes-advanced' ) . '</p>';
+                            }
+                        }
+                        ?>
+                    </div>
+                </div>
+
+                <div class="jfbwqa-pane-panel jfbwqa-pane-panel--advanced" data-panel="advanced" hidden>
+                    <h2><?php esc_html_e( 'Advanced', 'jfb-wc-quotes-advanced' ); ?></h2>
+                    <?php jfbwqa_render_settings_sections_by_id( [ 'jfbwqa_section_deliverability' ] ); ?>
+                </div>
+
+                    <div class="jfbwqa-save-bar">
+                        <?php submit_button( __( 'Save All Settings', 'jfb-wc-quotes-advanced' ), 'primary', 'submit', false ); ?>
+                    </div>
+                </form>
+
+                <div class="jfbwqa-pane-panel jfbwqa-pane-panel--intake-tools" data-panel="intake">
+                    <form method="post" id="jfbwqa-populate-form">
+                        <?php wp_nonce_field( 'jfbwqa_admin_nonce_populate', 'jfbwqa_populate_nonce' ); ?>
+                        <input type="submit" class="button" name="jfbwqa_populate_table" value="<?php esc_attr_e( 'Populate Mapping Table', 'jfb-wc-quotes-advanced' ); ?>" <?php echo ! file_exists( jfbwqa_jetform_path() ) ? 'disabled' : ''; ?>>
+                        <p class="description"><?php esc_html_e( 'Click this AFTER uploading a JSON file and saving settings. This reads jetform-latest.json and generates the mapping table above.', 'jfb-wc-quotes-advanced' ); ?>
+                        <?php
+                        if ( ! file_exists( jfbwqa_jetform_path() ) ) {
+                            echo '<strong> ' . esc_html__( '(Disabled until a JSON file is uploaded and saved)', 'jfb-wc-quotes-advanced' ) . '</strong>';
+                        }
+                        ?>
+                        </p>
+                    </form>
+                </div>
+            </div><!-- .jfbwqa-admin-pane -->
+        </div><!-- .jfbwqa-admin-app -->
 
     </div>
      <?php
-     // Add JS to trigger event if table HTML was embedded directly
      if (!empty($populate_table_html)) {
          echo "<script>document.addEventListener('DOMContentLoaded', function(){ jQuery(document).trigger('jfbwqa:mappingTablePopulated'); });</script>";
      }

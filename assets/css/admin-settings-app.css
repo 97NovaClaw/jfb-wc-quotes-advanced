@@ -1,0 +1,232 @@
+/**
+ * JFBWQA v2.0 - Order Events admin app (settings page tabbed shell)
+ */
+
+.jfbwqa-settings-wrap .jfbwqa-settings-intro {
+    max-width: 900px;
+    margin-bottom: 12px;
+}
+
+.jfbwqa-registry-status {
+    min-height: 1.4em;
+    margin: 0 0 12px;
+    font-style: italic;
+    color: #50575e;
+}
+
+.jfbwqa-registry-status.is-error {
+    color: #b32d2e;
+}
+
+.jfbwqa-registry-status.is-success {
+    color: #007017;
+}
+
+.jfbwqa-admin-app {
+    display: flex;
+    align-items: flex-start;
+    gap: 20px;
+    margin-top: 8px;
+}
+
+.jfbwqa-admin-rail {
+    flex: 0 0 280px;
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04);
+}
+
+.jfbwqa-rail-header {
+    padding: 10px 12px;
+    font-weight: 600;
+    border-bottom: 1px solid #dcdcde;
+    background: #f6f7f7;
+}
+
+.jfbwqa-event-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    max-height: 520px;
+    overflow-y: auto;
+}
+
+.jfbwqa-event-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border-bottom: 1px solid #f0f0f1;
+    cursor: pointer;
+    background: #fff;
+}
+
+.jfbwqa-event-row:hover {
+    background: #f6f7f7;
+}
+
+.jfbwqa-event-row.is-active {
+    background: #f0f6fc;
+    box-shadow: inset 3px 0 0 #2271b1;
+}
+
+.jfbwqa-event-row.is-hidden-event {
+    opacity: 0.65;
+}
+
+.jfbwqa-event-row.ui-sortable-helper {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.jfbwqa-drag-handle {
+    cursor: grab;
+    color: #787c82;
+    flex-shrink: 0;
+}
+
+.jfbwqa-drag-handle:active {
+    cursor: grabbing;
+}
+
+.jfbwqa-eye-toggle {
+    border: none;
+    background: transparent;
+    padding: 0;
+    cursor: pointer;
+    color: #50575e;
+    flex-shrink: 0;
+    line-height: 1;
+}
+
+.jfbwqa-eye-toggle:hover {
+    color: #2271b1;
+}
+
+.jfbwqa-event-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    width: 100%;
+    border: 1px solid transparent;
+    background: transparent;
+    padding: 2px 4px;
+    font-size: 13px;
+}
+
+.jfbwqa-event-row.is-active .jfbwqa-event-label,
+.jfbwqa-event-label:focus {
+    border-color: #8c8f94;
+    background: #fff;
+    border-radius: 2px;
+}
+
+.jfbwqa-rail-tab {
+    display: block;
+    width: calc(100% - 16px);
+    margin: 6px 8px 0;
+    text-align: left;
+}
+
+.jfbwqa-rail-tabs {
+    padding-bottom: 10px;
+    border-top: 1px solid #dcdcde;
+    margin-top: 6px;
+    padding-top: 8px;
+}
+
+.jfbwqa-rail-tab.is-active {
+    background: #2271b1;
+    border-color: #2271b1;
+    color: #fff;
+}
+
+.jfbwqa-admin-pane {
+    flex: 1 1 auto;
+    min-width: 0;
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    padding: 16px 20px 24px;
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04);
+}
+
+.jfbwqa-pane-panel--event[hidden],
+.jfbwqa-pane-panel--advanced[hidden],
+.jfbwqa-pane-panel--intake-tools[hidden] {
+    display: none !important;
+}
+
+.jfbwqa-pane-panel--intake:not(.is-active),
+.jfbwqa-pane-panel--advanced:not(.is-active),
+.jfbwqa-pane-panel--intake-tools:not(.is-active) {
+    display: none;
+}
+
+.jfbwqa-pane-panel--event h2,
+.jfbwqa-pane-panel--intake h2,
+.jfbwqa-pane-panel--advanced h2 {
+    margin-top: 0;
+}
+
+.jfbwqa-event-meta {
+    margin-top: -8px;
+    color: #646970;
+}
+
+.jfbwqa-save-bar {
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px solid #dcdcde;
+}
+
+.jfbwqa-pane-panel--intake-tools {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px dashed #dcdcde;
+}
+
+.jfbwqa-template-viewer {
+    margin-top: 28px;
+}
+
+.jfbwqa-template-file {
+    margin-bottom: 20px;
+}
+
+.jfbwqa-template-file-meta {
+    margin-bottom: 8px;
+}
+
+.jfbwqa-template-path {
+    word-break: break-all;
+}
+
+.jfbwqa-template-code {
+    max-height: 360px;
+    overflow: auto;
+    margin: 0;
+    padding: 12px 14px;
+    background: #1e1e1e;
+    color: #d4d4d4;
+    border-radius: 4px;
+    font-size: 12px;
+    line-height: 1.45;
+    tab-size: 4;
+}
+
+.jfbwqa-template-code code {
+    font-family: Consolas, Monaco, "Andale Mono", "Ubuntu Mono", monospace;
+    white-space: pre;
+    display: block;
+}
+
+@media (max-width: 960px) {
+    .jfbwqa-admin-app {
+        flex-direction: column;
+    }
+
+    .jfbwqa-admin-rail {
+        flex: 1 1 auto;
+        width: 100%;
+    }
+}
