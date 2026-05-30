@@ -4,6 +4,35 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [1.30.0] - 2026-05-30
+
+### Added
+- **"Hide WooCommerce 'Added to cart' notice" toggle** (Settings → JFB
+  WC Quotes → Form Submission). When enabled, suppresses WooCommerce's
+  classic `"X" has been added to your cart` notification bar and its
+  View Cart button. Default OFF — stock WooCommerce behavior is
+  untouched unless you opt in.
+
+  Covers both notice paths on a typical setup (AJAX add-to-cart ON,
+  redirect-after-add OFF):
+  - **AJAX archive adds**: empties the message WooCommerce returns to
+    the front-end JS (`wc_add_to_cart_message_html` filter → empty).
+  - **Single-product / reload adds**: the same filter empties the
+    stored notice, then `jfbwqa_strip_empty_success_notices()` removes
+    the now-empty success notice from the WC session on
+    `template_redirect` so no blank bar is left behind.
+
+  Only empty success notices are stripped; error/info notices and any
+  success notice with real content are preserved.
+
+### Why
+The site uses the quote-cart popup for the request flow, which makes
+WooCommerce's stock "added to cart" bar redundant and visually
+confusing. This gives the admin a one-click switch instead of a theme
+hack.
+
+---
+
 ## [1.29.0] - 2026-05-30
 
 ### Added

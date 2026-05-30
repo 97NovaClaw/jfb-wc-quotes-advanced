@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI. HPOS-compatible; creates orders in-process via wc_create_order() (no REST credentials required).
- * Version:     1.29.0
+ * Version:     1.30.0
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '1.29.0' );
+define( 'JFBWQA_VERSION', '1.30.0' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_SETTINGS_SLUG', 'jfbwqa-settings' ); // Menu slug for settings page
 
@@ -132,6 +132,10 @@ function jfbwqa_get_options() {
         // this is synced into the _jf_messages.success of every JFB form
         // that uses our hook, so JetFormBuilder renders it natively.
         'form_success_message' => "Your request was sent — we'll follow up by email within 1 business day.",
+        // v1.30: When true, suppress WooCommerce's classic "added to cart"
+        // notice (the ""X" has been added to your cart" bar + View Cart
+        // button). Default false to preserve stock WC behavior.
+        'disable_wc_add_to_cart_notice' => false,
         'email_subject'      => 'Your Estimate Request #{order_number}',
         'email_heading'      => 'Estimate Request Details',
         'email_reply_to'     => get_option('admin_email'),
@@ -733,6 +737,68 @@ function jfbwqa_enqueue_form_success_assets() {
         'formIds' => array_values( array_map( 'intval', $form_ids ) ),
         'message' => (string) ( $options['form_success_message'] ?? '' ),
     ] );
+}
+
+/* =============================================================================
+   6.7) Suppress WooCommerce "added to cart" notice (v1.30)
+   -----------------------------------------------------------------------------
+   When the setting is on, kill WooCommerce's classic add-to-cart success
+   notice in BOTH paths that can produce it on this stack:
+
+     - AJAX archive add-to-cart: WC builds the message via
+       wc_add_to_cart_message( ..., $return = true ) and hands it to the
+       front-end JS. Emptying the wc_add_to_cart_message_html filter makes
+       that return value empty, so nothing is shown.
+
+     - Single-product / non-AJAX add-to-cart (redirect_after_add is OFF on
+       this site, so the product page reloads): WC calls wc_add_notice() with
+       the message and wc_print_notices() renders the bar. Our filter makes
+       that stored notice empty; we then strip empty success notices from the
+       session on template_redirect so no empty bar is left behind.
+
+   Default is OFF, so stock WooCommerce behavior is untouched unless the admin
+   opts in. Error/info notices and non-empty success notices are never
+   affected.
+   ============================================================================= */
+add_action( 'init', 'jfbwqa_maybe_suppress_add_to_cart_notice' );
+function jfbwqa_maybe_suppress_add_to_cart_notice() {
+    $options = jfbwqa_get_options();
+    if ( empty( $options['disable_wc_add_to_cart_notice'] ) ) {
+        return;
+    }
+    // Empty the message text (and the View Cart button it contains) for both
+    // the AJAX-returned message and the stored-notice message.
+    add_filter( 'wc_add_to_cart_message_html', '__return_empty_string', 100 );
+    // Strip the now-empty success notice from the session before it renders.
+    add_action( 'template_redirect', 'jfbwqa_strip_empty_success_notices', 1 );
+}
+
+/**
+ * Remove empty success notices from the WC session so an emptied
+ * "added to cart" message doesn't render as a blank notice bar. Only touches
+ * success notices whose visible text is empty; real messages are preserved.
+ */
+function jfbwqa_strip_empty_success_notices() {
+    if ( ! function_exists( 'WC' ) || ! WC()->session ) {
+        return;
+    }
+    $notices = WC()->session->get( 'wc_notices', [] );
+    if ( empty( $notices['success'] ) || ! is_array( $notices['success'] ) ) {
+        return;
+    }
+    $kept = array_filter( $notices['success'], function( $n ) {
+        $text = is_array( $n ) ? ( $n['notice'] ?? '' ) : (string) $n;
+        return trim( wp_strip_all_tags( (string) $text ) ) !== '';
+    } );
+    if ( count( $kept ) === count( $notices['success'] ) ) {
+        return; // Nothing empty; leave the session alone.
+    }
+    if ( empty( $kept ) ) {
+        unset( $notices['success'] );
+    } else {
+        $notices['success'] = array_values( $kept );
+    }
+    WC()->session->set( 'wc_notices', $notices );
 }
 
 /**
@@ -1705,6 +1771,17 @@ function jfbwqa_settings_init() {
             'desc' => __( 'Shown on the form after a successful submission. Plain text only. On save, this is written into the success message of every JetFormBuilder form that uses the hook above, and all other fields are hidden so only this message remains until the popup closes.', 'jfb-wc-quotes-advanced' ),
         ]
     );
+    add_settings_field(
+        'disable_wc_add_to_cart_notice',
+        __( "Hide WooCommerce \"Added to cart\" notice", 'jfb-wc-quotes-advanced' ),
+        'jfbwqa_render_field_checkbox',
+        JFBWQA_SETTINGS_SLUG,
+        'jfbwqa_section_form',
+        [
+            'key'  => 'disable_wc_add_to_cart_notice',
+            'desc' => __( 'Suppress WooCommerce\'s default "\"X\" has been added to your cart" notification bar and its View Cart button. Recommended when you use the quote-cart popup instead of the standard WooCommerce cart messages.', 'jfb-wc-quotes-advanced' ),
+        ]
+    );
 
     // Email Settings Section
      add_settings_section('jfbwqa_section_email', __('Estimate Email Settings', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_section_email_desc', JFBWQA_SETTINGS_SLUG);
@@ -1997,6 +2074,8 @@ function jfbwqa_sanitize_options( $input ) {
     // and normalizes whitespace but preserves the literal characters the
     // admin typed (so a real em-dash stays an em-dash; nothing becomes u2014).
     $output['form_success_message'] = sanitize_textarea_field( $input['form_success_message'] ?? '' );
+    // v1.30: checkbox toggle for suppressing the WC add-to-cart notice.
+    $output['disable_wc_add_to_cart_notice'] = isset( $input['disable_wc_add_to_cart_notice'] ) ? true : false;
     $output['email_subject']   = sanitize_text_field($input['email_subject'] ?? '');
     $output['email_heading']   = sanitize_text_field($input['email_heading'] ?? '');
     $output['email_reply_to']  = sanitize_email($input['email_reply_to'] ?? '');
