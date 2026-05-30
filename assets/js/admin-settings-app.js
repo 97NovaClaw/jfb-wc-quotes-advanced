@@ -212,6 +212,23 @@
                 });
         });
 
+        // Show the status dropdown only when the "status changes to…" trigger
+        // is selected.
+        function syncTriggerStatus($select) {
+            var $status = $select.closest('td').find('.jfbwqa-trigger-status');
+            if ($select.val() === 'status_changed') {
+                $status.show();
+            } else {
+                $status.hide();
+            }
+        }
+        $('.jfbwqa-admin-pane').on('change', '.jfbwqa-trigger-type', function () {
+            syncTriggerStatus($(this));
+        });
+        $('.jfbwqa-trigger-type').each(function () {
+            syncTriggerStatus($(this));
+        });
+
         $('.jfbwqa-admin-pane').on('click', '.jfbwqa-delete-event', function () {
             var slug = $(this).data('slug');
             if (!slug) {

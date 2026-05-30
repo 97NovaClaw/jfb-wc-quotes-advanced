@@ -4,6 +4,30 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [2.5.0] - 2026-02-28
+
+### Added
+- **Event triggers — automatic, event-based emails.** Each plugin/custom
+  email event now has a **"When this email is sent"** control in its tab:
+  - **Manual** — only from the WooCommerce Order actions dropdown (unchanged).
+  - **When a request is submitted** — fires automatically as the JetForm
+    submission creates the order. This is how the **Estimate Request
+    confirmation** is now sent without a manual click.
+  - **When the order status changes to…** — fires on a chosen status via
+    `woocommerce_order_status_changed`.
+- New additive option `jfbwqa_event_triggers` (saved with **Save All
+  Settings**); a dispatcher routes each event to its existing sender.
+  Re-entrancy guarded so an event can't double-send for one order per
+  request. New `jfbwqa_request_submitted` action hook for extensions.
+
+### Changed
+- **Default:** the Estimate Request event now defaults to **"When a request
+  is submitted,"** so the confirmation email works out of the box. Set it
+  back to **Manual** in its tab if you prefer the old click-to-send flow.
+  (WooCommerce core actions remain manual-only — WC owns their logic.)
+
+---
+
 ## [2.4.0] - 2026-02-28
 
 ### Added

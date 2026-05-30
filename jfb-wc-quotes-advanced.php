@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI. HPOS-compatible; creates orders in-process via wc_create_order() (no REST credentials required).
- * Version:     2.4.0
+ * Version:     2.5.0
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -18,11 +18,12 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '2.4.0' );
+define( 'JFBWQA_VERSION', '2.5.0' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_REGISTRY_OPTION', 'jfbwqa_event_registry' ); // Order-event registry (label, visible, order, source)
 define( 'JFBWQA_CUSTOM_EVENTS_OPTION', 'jfbwqa_custom_events' ); // User-created editable email events
 define( 'JFBWQA_CUSTOM_EVENT_PREFIX', 'jfbwqa_custom_' ); // Slug prefix for custom events
+define( 'JFBWQA_TRIGGERS_OPTION', 'jfbwqa_event_triggers' ); // Per-event send triggers (manual / order_created / status_changed)
 define( 'JFBWQA_SETTINGS_SLUG', 'jfbwqa-settings' ); // Menu slug for settings page
 
 /* =============================================================================
@@ -139,7 +140,7 @@ function jfbwqa_get_options() {
         // notice (the ""X" has been added to your cart" bar + View Cart
         // button). Default false to preserve stock WC behavior.
         'disable_wc_add_to_cart_notice' => false,
-        // v2.4: when true, hide WordPress's "Custom Fields" metabox on the
+        // v2.4+: when true, hide WordPress's "Custom Fields" metabox on the
         // order edit screen (legacy + HPOS). Does not delete any meta.
         'hide_order_custom_fields' => false,
         'email_subject'      => 'Your Estimate Request #{order_number}',
@@ -1076,6 +1077,13 @@ function jfbwqa_handle_form_submission( $result, $request, $action_handler ) {
         jfbwqa_write_log( "DEBUG: WC()->cart not available during submission for order #{$new_order_id}; cart not auto-emptied." );
     }
 
+    // v2.5: fire any events configured to send on request submission
+    // (e.g. the Estimate Request confirmation email). Runs after the order
+    // is fully built/saved so senders see complete order data. A custom
+    // hook is also exposed for downstream extensions.
+    do_action( 'jfbwqa_request_submitted', $order, $new_order_id );
+    jfbwqa_fire_triggered_events( $order, 'order_created' );
+
     // Optional: surface the order ID back to JFB action chain so downstream
     // actions (e.g., redirects, additional emails) can reference it.
     if ( is_array( $result ) ) {
@@ -1469,6 +1477,195 @@ function jfbwqa_send_custom_event_email( WC_Order $order, array $event ) {
     $order->add_order_note( $error_msg, false, false );
     jfbwqa_write_log( "ERROR: wp_mail() failed for custom event '{$label}', order #{$order_id}." );
     return false;
+}
+
+/* =============================================================================
+   7d) Event Triggers (v2.5) - automatic, event-based sends
+   -----------------------------------------------------------------------------
+   Each plugin/custom email event can be sent three ways:
+     - manual         : only from the WooCommerce "Order actions" dropdown.
+     - order_created  : automatically when a request is submitted (our JFB
+                        form creates the order). This is how the Estimate
+                        Request confirmation is sent without a manual click.
+     - status_changed : automatically when the order moves to a chosen status.
+   Triggers live in their own additive option so existing per-event email
+   settings are untouched. WooCommerce core actions are not triggerable
+   (WC owns their logic).
+   ============================================================================= */
+
+/**
+ * Slugs that support triggers (have an email sender): plugin built-ins + custom.
+ */
+function jfbwqa_get_triggerable_event_slugs() {
+    return array_merge( jfbwqa_get_plugin_event_slugs(), array_keys( jfbwqa_get_custom_events() ) );
+}
+
+/**
+ * Default trigger for a slug. The Estimate Request defaults to firing on
+ * submission so the confirmation email "just works" out of the box.
+ */
+function jfbwqa_default_event_trigger( $slug ) {
+    if ( $slug === 'jfbwqa_send_estimate_email' ) {
+        return [ 'type' => 'order_created', 'status' => '' ];
+    }
+    return [ 'type' => 'manual', 'status' => '' ];
+}
+
+/**
+ * Read all event triggers merged over their defaults, keyed by slug.
+ *
+ * @return array<string,array{type:string,status:string}>
+ */
+function jfbwqa_get_event_triggers() {
+    $stored = get_option( JFBWQA_TRIGGERS_OPTION, [] );
+    if ( ! is_array( $stored ) ) {
+        $stored = [];
+    }
+    $valid = [ 'manual', 'order_created', 'status_changed' ];
+    $out   = [];
+    foreach ( jfbwqa_get_triggerable_event_slugs() as $slug ) {
+        $default = jfbwqa_default_event_trigger( $slug );
+        if ( isset( $stored[ $slug ] ) && is_array( $stored[ $slug ] ) ) {
+            $type   = in_array( $stored[ $slug ]['type'] ?? '', $valid, true ) ? $stored[ $slug ]['type'] : $default['type'];
+            $status = sanitize_text_field( (string) ( $stored[ $slug ]['status'] ?? $default['status'] ) );
+            $out[ $slug ] = [ 'type' => $type, 'status' => $status ];
+        } else {
+            $out[ $slug ] = $default;
+        }
+    }
+    return $out;
+}
+
+/**
+ * Read one event's trigger (merged with defaults).
+ */
+function jfbwqa_get_event_trigger( $slug ) {
+    $all = jfbwqa_get_event_triggers();
+    return $all[ $slug ] ?? jfbwqa_default_event_trigger( $slug );
+}
+
+/**
+ * Send an event's email for an order by slug. Re-entrancy guarded so the
+ * same event can't fire twice for one order within a single request.
+ */
+function jfbwqa_dispatch_event_email( $slug, $order ) {
+    static $sent = [];
+
+    if ( ! is_a( $order, 'WC_Order' ) ) {
+        $order = wc_get_order( absint( $order ) );
+    }
+    if ( ! $order ) {
+        return false;
+    }
+
+    $key = $order->get_id() . ':' . $slug;
+    if ( isset( $sent[ $key ] ) ) {
+        return false;
+    }
+    $sent[ $key ] = true;
+
+    if ( $slug === 'jfbwqa_send_estimate_email' ) {
+        jfbwqa_handle_order_action( $order );
+        return true;
+    }
+    if ( $slug === 'jfbwqa_send_prepared_quote' ) {
+        return jfbwqa_handle_send_prepared_quote_action( $order );
+    }
+    if ( jfbwqa_is_custom_event_slug( $slug ) ) {
+        $event = jfbwqa_get_custom_event( $slug );
+        return $event ? jfbwqa_send_custom_event_email( $order, $event ) : false;
+    }
+    return false;
+}
+
+/**
+ * Fire every event whose trigger matches the given type/context.
+ *
+ * @param WC_Order|int $order
+ * @param string       $trigger_type 'order_created' | 'status_changed'
+ * @param string       $context      For status_changed: the new status slug.
+ */
+function jfbwqa_fire_triggered_events( $order, $trigger_type, $context = '' ) {
+    if ( ! is_a( $order, 'WC_Order' ) ) {
+        $order = wc_get_order( absint( $order ) );
+    }
+    if ( ! $order ) {
+        return;
+    }
+
+    foreach ( jfbwqa_get_event_triggers() as $slug => $cfg ) {
+        if ( ( $cfg['type'] ?? 'manual' ) !== $trigger_type ) {
+            continue;
+        }
+        if ( $trigger_type === 'status_changed' ) {
+            $want = preg_replace( '/^wc-/', '', (string) ( $cfg['status'] ?? '' ) );
+            $got  = preg_replace( '/^wc-/', '', (string) $context );
+            if ( $want === '' || $want !== $got ) {
+                continue;
+            }
+        }
+        jfbwqa_dispatch_event_email( $slug, $order );
+    }
+}
+
+/**
+ * Status-change trigger entry point.
+ */
+add_action( 'woocommerce_order_status_changed', 'jfbwqa_on_order_status_changed', 10, 4 );
+function jfbwqa_on_order_status_changed( $order_id, $from, $to, $order ) {
+    jfbwqa_fire_triggered_events( $order, 'status_changed', $to );
+}
+
+/**
+ * Sanitize the triggers option (saved with the main settings form).
+ */
+function jfbwqa_sanitize_event_triggers( $input ) {
+    $out   = [];
+    $valid = [ 'manual', 'order_created', 'status_changed' ];
+    if ( ! is_array( $input ) ) {
+        return $out;
+    }
+    foreach ( $input as $slug => $data ) {
+        $slug = sanitize_key( $slug );
+        if ( ! is_array( $data ) ) {
+            continue;
+        }
+        $type   = in_array( $data['type'] ?? '', $valid, true ) ? $data['type'] : 'manual';
+        $status = sanitize_text_field( wp_unslash( $data['status'] ?? '' ) );
+        $out[ $slug ] = [ 'type' => $type, 'status' => $status ];
+    }
+    return $out;
+}
+
+/**
+ * Render the trigger control for one event tab.
+ */
+function jfbwqa_render_event_trigger_field( $slug ) {
+    $trigger  = jfbwqa_get_event_trigger( $slug );
+    $base     = JFBWQA_TRIGGERS_OPTION . '[' . esc_attr( $slug ) . ']';
+    $type     = $trigger['type'] ?? 'manual';
+    $statuses = function_exists( 'wc_get_order_statuses' ) ? wc_get_order_statuses() : [];
+    ?>
+    <h3><?php esc_html_e( 'When this email is sent', 'jfb-wc-quotes-advanced' ); ?></h3>
+    <table class="form-table" role="presentation">
+        <tr>
+            <th scope="row"><?php esc_html_e( 'Trigger', 'jfb-wc-quotes-advanced' ); ?></th>
+            <td>
+                <select name="<?php echo $base; ?>[type]" class="jfbwqa-trigger-type">
+                    <option value="manual" <?php selected( $type, 'manual' ); ?>><?php esc_html_e( 'Manually, from the Order actions dropdown', 'jfb-wc-quotes-advanced' ); ?></option>
+                    <option value="order_created" <?php selected( $type, 'order_created' ); ?>><?php esc_html_e( 'Automatically when a request is submitted (order created by the form)', 'jfb-wc-quotes-advanced' ); ?></option>
+                    <option value="status_changed" <?php selected( $type, 'status_changed' ); ?>><?php esc_html_e( 'Automatically when the order status changes to…', 'jfb-wc-quotes-advanced' ); ?></option>
+                </select>
+                <select name="<?php echo $base; ?>[status]" class="jfbwqa-trigger-status" <?php echo ( $type === 'status_changed' ) ? '' : 'style="display:none;"'; ?>>
+                    <?php foreach ( $statuses as $status_key => $status_label ) : ?>
+                        <option value="<?php echo esc_attr( $status_key ); ?>" <?php selected( $trigger['status'] ?? '', $status_key ); ?>><?php echo esc_html( $status_label ); ?></option>
+                    <?php endforeach; ?>
+                </select>
+                <p class="description"><?php esc_html_e( 'Manual still works regardless: this event always remains available in the order Order actions dropdown (unless hidden).', 'jfb-wc-quotes-advanced' ); ?></p>
+            </td>
+        </tr>
+    </table>
+    <?php
 }
 
 /**
@@ -2216,6 +2413,13 @@ function jfbwqa_settings_init() {
         'jfbwqa_settings_group',
         JFBWQA_CUSTOM_EVENTS_OPTION,
         'jfbwqa_sanitize_custom_events'
+    );
+
+    // v2.5: per-event send triggers, saved with the same form.
+    register_setting(
+        'jfbwqa_settings_group',
+        JFBWQA_TRIGGERS_OPTION,
+        'jfbwqa_sanitize_event_triggers'
     );
 
     // General Settings Section
@@ -3281,8 +3485,10 @@ function jfbwqa_render_settings_page() {
                     </p>
 
                     <?php if ( $is_custom && isset( $custom_events[ $slug ] ) ) : ?>
+                        <?php jfbwqa_render_event_trigger_field( $slug ); ?>
                         <?php jfbwqa_render_custom_event_fields( $slug, $custom_events[ $slug ] ); ?>
                     <?php elseif ( $is_plugin && ! empty( $event_sections ) ) : ?>
+                        <?php jfbwqa_render_event_trigger_field( $slug ); ?>
                         <?php jfbwqa_render_settings_sections_by_id( $event_sections ); ?>
                         <?php jfbwqa_render_event_template_viewer( $slug ); ?>
                     <?php else : ?>
