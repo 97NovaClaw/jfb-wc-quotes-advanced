@@ -4,6 +4,39 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [2.3.0] - 2026-02-28
+
+### Added
+- **WooCommerce core order actions now appear as tabs.** Discovery seeds
+  WC's built-in actions (`send_order_details`, `send_order_details_admin`,
+  `regenerate_download_permissions`) — WooCommerce adds these directly in
+  its meta box rather than via a hooked callback, so an empty-array filter
+  call missed them. They now show in the rail with reorder/hide/rename
+  control and an "owned by WooCommerce" note in their tab.
+- **Custom editable email events (add / edit / delete).** A new
+  **Add Email Event** button in the rail creates a user-defined order
+  action with its own editable Subject, Heading, Reply-To, CC, Body, and
+  Order Details Table (cart) toggles. Use this for a "Form Response Email"
+  that includes the order cart, or any other phase email.
+  - Stored in the additive `jfbwqa_custom_events` option (slug prefix
+    `jfbwqa_custom_`); saved with the main **Save All Settings** button.
+  - Auto-registers as a WooCommerce order action and flows through the
+    registry (reorder / hide / rename in the rail like any event).
+  - Sends via the shared email template + placeholder engine
+    (`[Order Details Table]`, `{order_number}`, `{customer_first_name}`,
+    `{[mapped_field]}`, etc.).
+  - **Delete this event** button on each custom event tab (AJAX, with
+    confirm). Adding/deleting reloads the page and jumps to the relevant
+    tab via the URL hash.
+
+### Notes
+- Adding or deleting an event reloads the settings page; save other field
+  edits first.
+- Renaming a custom event uses the same left-rail inline rename (writes the
+  display label to the registry); the event keeps its stored base label.
+
+---
+
 ## [2.2.0] - 2026-02-28
 
 ### Added

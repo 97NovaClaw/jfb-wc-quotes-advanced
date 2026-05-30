@@ -91,6 +91,15 @@
         $('.jfbwqa-pane-panel--event[data-slug="' + slug + '"] h2').text(label);
     }
 
+    function activateFromHash() {
+        var hash = (window.location.hash || '').replace(/^#/, '');
+        if (hash && $('.jfbwqa-event-row[data-slug="' + hash + '"]').length) {
+            activatePanel(hash);
+            return true;
+        }
+        return false;
+    }
+
     $(function () {
         var $list = $('#jfbwqa-event-registry');
 
@@ -98,7 +107,9 @@
             return;
         }
 
-        activatePanel('intake');
+        if (!activateFromHash()) {
+            activatePanel('intake');
+        }
 
         $list.sortable({
             handle: '.jfbwqa-drag-handle',
@@ -178,6 +189,52 @@
         $list.on('focus', '.jfbwqa-event-label', function (e) {
             e.stopPropagation();
             activatePanel($(this).closest('.jfbwqa-event-row').data('slug'));
+        });
+
+        $('.jfbwqa-add-event').on('click', function () {
+            var $btn = $(this);
+            $btn.prop('disabled', true);
+            setStatus((cfg.i18n && cfg.i18n.adding) || 'Creating…', '');
+
+            $.post(cfg.ajaxUrl, { action: 'jfbwqa_registry_add_event', nonce: cfg.nonce })
+                .done(function (response) {
+                    if (response && response.success && response.data && response.data.slug) {
+                        window.location.hash = response.data.slug;
+                        window.location.reload();
+                    } else {
+                        $btn.prop('disabled', false);
+                        setStatus((cfg.i18n && cfg.i18n.error) || 'Error', 'error');
+                    }
+                })
+                .fail(function () {
+                    $btn.prop('disabled', false);
+                    setStatus((cfg.i18n && cfg.i18n.error) || 'Error', 'error');
+                });
+        });
+
+        $('.jfbwqa-admin-pane').on('click', '.jfbwqa-delete-event', function () {
+            var slug = $(this).data('slug');
+            if (!slug) {
+                return;
+            }
+            if (!window.confirm((cfg.i18n && cfg.i18n.confirmDelete) || 'Delete this event?')) {
+                return;
+            }
+            setStatus((cfg.i18n && cfg.i18n.deleting) || 'Deleting…', '');
+
+            $.post(cfg.ajaxUrl, { action: 'jfbwqa_registry_delete_event', nonce: cfg.nonce, slug: slug })
+                .done(function (response) {
+                    if (response && response.success) {
+                        window.location.hash = '';
+                        window.location.reload();
+                    } else {
+                        var msg = (response && response.data && response.data.message) || (cfg.i18n && cfg.i18n.error) || 'Error';
+                        setStatus(msg, 'error');
+                    }
+                })
+                .fail(function () {
+                    setStatus((cfg.i18n && cfg.i18n.error) || 'Error', 'error');
+                });
         });
     });
 }(jQuery));

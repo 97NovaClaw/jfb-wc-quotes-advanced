@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI. HPOS-compatible; creates orders in-process via wc_create_order() (no REST credentials required).
- * Version:     2.2.0
+ * Version:     2.3.0
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -18,9 +18,11 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '2.2.0' );
+define( 'JFBWQA_VERSION', '2.3.0' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_REGISTRY_OPTION', 'jfbwqa_event_registry' ); // Order-event registry (label, visible, order, source)
+define( 'JFBWQA_CUSTOM_EVENTS_OPTION', 'jfbwqa_custom_events' ); // User-created editable email events
+define( 'JFBWQA_CUSTOM_EVENT_PREFIX', 'jfbwqa_custom_' ); // Slug prefix for custom events
 define( 'JFBWQA_SETTINGS_SLUG', 'jfbwqa-settings' ); // Menu slug for settings page
 
 /* =============================================================================
@@ -1087,6 +1089,12 @@ add_filter( 'woocommerce_order_actions', 'jfbwqa_add_order_action' );
 function jfbwqa_add_order_action( $actions ) {
     $actions['jfbwqa_send_estimate_email'] = __( 'Send Estimate Request Email', 'jfb-wc-quotes-advanced' );
     $actions['jfbwqa_send_prepared_quote'] = __( 'Send Prepared Quote Email', 'jfb-wc-quotes-advanced' ); // New Action
+
+    // v2.3: user-created editable email events register themselves here too,
+    // so they flow into the registry/dropdown like the built-ins.
+    foreach ( jfbwqa_get_custom_events() as $slug => $event ) {
+        $actions[ $slug ] = ! empty( $event['label'] ) ? $event['label'] : $slug;
+    }
     return $actions;
 }
 
@@ -1112,8 +1120,19 @@ function jfbwqa_get_plugin_event_slugs() {
  * @return array<string,string> slug => default label
  */
 function jfbwqa_discover_order_actions() {
+    // WooCommerce's built-in actions are NOT added through a hooked callback;
+    // core seeds them directly in WC_Meta_Box_Order_Actions::output() before
+    // applying the woocommerce_order_actions filter. So an empty-array filter
+    // call would miss them. Seed the well-known core defaults so they surface
+    // in the registry/tabs and can be reordered/hidden/renamed.
+    $core_defaults = [
+        'send_order_details'              => __( 'Email invoice / order details to customer', 'woocommerce' ),
+        'send_order_details_admin'        => __( 'Resend new order notification', 'woocommerce' ),
+        'regenerate_download_permissions' => __( 'Regenerate download permissions', 'woocommerce' ),
+    ];
+
     $had_filter = remove_filter( 'woocommerce_order_actions', 'jfbwqa_apply_event_registry_to_actions', 99 );
-    $actions    = apply_filters( 'woocommerce_order_actions', [], null );
+    $actions    = apply_filters( 'woocommerce_order_actions', $core_defaults, null );
     if ( $had_filter ) {
         add_filter( 'woocommerce_order_actions', 'jfbwqa_apply_event_registry_to_actions', 99 );
     }
@@ -1148,7 +1167,13 @@ function jfbwqa_get_merged_event_registry( $persist = true ) {
     foreach ( $discovered as $slug => $default_label ) {
         $slug          = sanitize_key( $slug );
         $default_label = wp_strip_all_tags( (string) $default_label );
-        $source        = in_array( $slug, $plugin_slugs, true ) ? 'plugin' : 'woocommerce';
+        if ( in_array( $slug, $plugin_slugs, true ) ) {
+            $source = 'plugin';
+        } elseif ( jfbwqa_is_custom_event_slug( $slug ) ) {
+            $source = 'custom';
+        } else {
+            $source = 'woocommerce';
+        }
 
         if ( isset( $stored[ $slug ] ) && is_array( $stored[ $slug ] ) ) {
             $prev          = $stored[ $slug ];
@@ -1157,7 +1182,8 @@ function jfbwqa_get_merged_event_registry( $persist = true ) {
                 'default_label' => $default_label,
                 'visible'       => ! isset( $prev['visible'] ) || (bool) $prev['visible'],
                 'order'         => isset( $prev['order'] ) ? (int) $prev['order'] : $order_counter++,
-                'source'        => isset( $prev['source'] ) ? sanitize_key( (string) $prev['source'] ) : $source,
+                // Always recompute source so custom/plugin classification can't go stale.
+                'source'        => $source,
             ];
         } else {
             $merged[ $slug ] = [
@@ -1207,6 +1233,239 @@ function jfbwqa_get_merged_event_registry( $persist = true ) {
  */
 function jfbwqa_save_event_registry( array $registry ) {
     update_option( JFBWQA_REGISTRY_OPTION, $registry, false );
+}
+
+/* =============================================================================
+   7c) Custom Editable Email Events (v2.3) - CRUD + send
+   -----------------------------------------------------------------------------
+   Admins can create their own order-action email events (e.g. a "Form
+   Response Email" that includes the order cart). Each custom event stores
+   its own subject/heading/reply-to/cc/body + Order Details Table toggles,
+   registers itself as a WC order action, and sends via wp_mail using the
+   same template + placeholder engine as the built-in events.
+   ============================================================================= */
+
+/**
+ * True when the slug belongs to a user-created custom event.
+ */
+function jfbwqa_is_custom_event_slug( $slug ) {
+    return is_string( $slug ) && strpos( $slug, JFBWQA_CUSTOM_EVENT_PREFIX ) === 0;
+}
+
+/**
+ * Default shape for a custom event. Table toggles default to a quote-like
+ * (pricing-on) layout since custom events usually surface order details.
+ */
+function jfbwqa_default_custom_event( $label = '' ) {
+    if ( $label === '' ) {
+        $label = __( 'New Email Event', 'jfb-wc-quotes-advanced' );
+    }
+    return [
+        'label'          => $label,
+        'email_subject'  => 'Update on your order #{order_number}',
+        'email_heading'  => $label,
+        'email_reply_to' => get_option( 'admin_email' ),
+        'email_cc'       => '',
+        'email_body'     => "Hello {customer_first_name},\n\n[Order Details Table]\n\nRegards,\n{site_title}",
+        'table'          => [
+            'show_image'       => true,
+            'show_unit_price'  => true,
+            'show_line_total'  => true,
+            'show_subtotal'    => true,
+            'show_shipping'    => true,
+            'show_fees'        => true,
+            'show_discount'    => false,
+            'show_tax'         => true,
+            'show_grand_total' => true,
+        ],
+    ];
+}
+
+/**
+ * Normalize one stored/raw custom event into the canonical shape.
+ */
+function jfbwqa_normalize_custom_event( $raw ) {
+    $defaults = jfbwqa_default_custom_event();
+    if ( ! is_array( $raw ) ) {
+        return $defaults;
+    }
+    $event                   = wp_parse_args( $raw, $defaults );
+    $event['table']          = wp_parse_args( is_array( $raw['table'] ?? null ) ? $raw['table'] : [], $defaults['table'] );
+    foreach ( $event['table'] as $k => $v ) {
+        $event['table'][ $k ] = (bool) $v;
+    }
+    return $event;
+}
+
+/**
+ * Read all custom events, normalized. Keyed by slug.
+ *
+ * @return array<string,array>
+ */
+function jfbwqa_get_custom_events() {
+    $stored = get_option( JFBWQA_CUSTOM_EVENTS_OPTION, [] );
+    if ( ! is_array( $stored ) ) {
+        return [];
+    }
+    $events = [];
+    foreach ( $stored as $slug => $raw ) {
+        $slug = sanitize_key( $slug );
+        if ( ! jfbwqa_is_custom_event_slug( $slug ) ) {
+            continue;
+        }
+        $events[ $slug ] = jfbwqa_normalize_custom_event( $raw );
+    }
+    return $events;
+}
+
+/**
+ * Read a single custom event by slug, or null.
+ */
+function jfbwqa_get_custom_event( $slug ) {
+    $events = jfbwqa_get_custom_events();
+    return $events[ $slug ] ?? null;
+}
+
+/**
+ * Persist the full custom-events map (caller is responsible for sanitization).
+ */
+function jfbwqa_save_custom_events( array $events ) {
+    update_option( JFBWQA_CUSTOM_EVENTS_OPTION, $events, false );
+}
+
+/**
+ * Generate a fresh, unused custom-event slug.
+ */
+function jfbwqa_generate_custom_event_slug() {
+    $existing = jfbwqa_get_custom_events();
+    do {
+        $slug = JFBWQA_CUSTOM_EVENT_PREFIX . substr( md5( uniqid( '', true ) ), 0, 8 );
+    } while ( isset( $existing[ $slug ] ) );
+    return $slug;
+}
+
+/**
+ * Register a send handler for every custom event so WC's
+ * woocommerce_order_action_{slug} hook reaches our generic sender.
+ */
+add_action( 'init', 'jfbwqa_register_custom_event_handlers' );
+function jfbwqa_register_custom_event_handlers() {
+    foreach ( array_keys( jfbwqa_get_custom_events() ) as $slug ) {
+        add_action( 'woocommerce_order_action_' . $slug, 'jfbwqa_handle_custom_event_action' );
+    }
+}
+
+/**
+ * Generic order-action handler for custom events. Resolves which event
+ * fired via current_action(), then sends its configured email.
+ */
+function jfbwqa_handle_custom_event_action( $order ) {
+    if ( ! is_a( $order, 'WC_Order' ) ) {
+        $order = wc_get_order( absint( $order ) );
+        if ( ! $order ) {
+            return false;
+        }
+    }
+
+    $slug  = preg_replace( '/^woocommerce_order_action_/', '', (string) current_action() );
+    $event = jfbwqa_get_custom_event( $slug );
+    if ( ! $event ) {
+        jfbwqa_write_log( "ERROR: Custom event handler fired for unknown slug '{$slug}'." );
+        return false;
+    }
+
+    return jfbwqa_send_custom_event_email( $order, $event );
+}
+
+/**
+ * Build + send a custom event's email for an order. Mirrors the
+ * prepared-quote sender but reads everything from the event config.
+ */
+function jfbwqa_send_custom_event_email( WC_Order $order, array $event ) {
+    $order_id = $order->get_id();
+    $label    = $event['label'] ?? __( 'Custom Email', 'jfb-wc-quotes-advanced' );
+    jfbwqa_write_log( "Custom event '{$label}' triggered for order ID: {$order_id}" );
+
+    $recipient_email = $order->get_billing_email();
+    if ( ! is_email( $recipient_email ) ) {
+        $error_msg = sprintf( __( 'Failed to send "%1$s" for Order #%2$s: Invalid billing email.', 'jfb-wc-quotes-advanced' ), $label, $order->get_order_number() );
+        jfbwqa_write_log( 'ERROR (Custom event): ' . $error_msg );
+        $order->add_order_note( $error_msg, false, false );
+        return false;
+    }
+
+    $base_replacements = [
+        '{order_number}'        => $order->get_order_number(),
+        '{site_title}'          => wp_specialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES ),
+        '{customer_first_name}' => $order->get_billing_first_name(),
+        '{customer_last_name}'  => $order->get_billing_last_name(),
+        '{customer_name}'       => $order->get_formatted_billing_full_name(),
+    ];
+
+    $subject = str_replace( array_keys( $base_replacements ), array_values( $base_replacements ), (string) ( $event['email_subject'] ?? '' ) );
+    $heading = str_replace( array_keys( $base_replacements ), array_values( $base_replacements ), (string) ( $event['email_heading'] ?? '' ) );
+
+    $body_with_breaks = wpautop( wptexturize( (string) ( $event['email_body'] ?? '' ) ) );
+    $table_config     = wp_parse_args( is_array( $event['table'] ?? null ) ? $event['table'] : [], jfbwqa_default_table_config() );
+    $email_body_final = jfbwqa_replace_email_placeholders( $body_with_breaks, $order, $table_config );
+
+    $template_name       = 'emails/customer-estimate-request.php';
+    $default_plugin_path = jfbwqa_plugin_dir() . 'woocommerce/';
+
+    $mailer = WC()->mailer();
+    ob_start();
+    wc_get_template(
+        $template_name,
+        [
+            'order'                 => $order,
+            'email_heading'         => $heading,
+            'email_body_content'    => $email_body_final,
+            'additional_content'    => '',
+            'sent_to_admin'         => false,
+            'plain_text'            => false,
+            'email'                 => $mailer,
+            'show_customer_details' => false,
+        ],
+        'jfb-wc-quotes-advanced/',
+        $default_plugin_path
+    );
+    $email_html_content = ob_get_clean();
+
+    if ( strpos( $email_html_content, '</html>' ) === false ) {
+        $email_html_content = $mailer ? $mailer->wrap_message( $heading, $email_html_content ) : $email_html_content;
+    }
+
+    $site_domain = wp_parse_url( get_site_url(), PHP_URL_HOST );
+    if ( substr( $site_domain, 0, 4 ) === 'www.' ) {
+        $site_domain = substr( $site_domain, 4 );
+    }
+    $from_email = 'noreply@' . $site_domain;
+    $from_name  = wp_specialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES );
+    $reply_to   = sanitize_email( (string) ( $event['email_reply_to'] ?? '' ) );
+    $cc         = sanitize_email( (string) ( $event['email_cc'] ?? '' ) );
+
+    $headers   = [ 'Content-Type: text/html; charset=UTF-8' ];
+    $headers[] = 'From: ' . $from_name . ' <' . $from_email . '>';
+    if ( ! empty( $reply_to ) && is_email( $reply_to ) ) {
+        $headers[] = 'Reply-To: <' . $reply_to . '>';
+    }
+    if ( ! empty( $cc ) && is_email( $cc ) ) {
+        $headers[] = 'Cc: <' . $cc . '>';
+    }
+
+    jfbwqa_write_log( "Sending custom event '{$label}' email to {$recipient_email} for order #{$order_id} with Subject: {$subject}" );
+    $sent = wp_mail( $recipient_email, $subject, $email_html_content, $headers );
+
+    if ( $sent ) {
+        $order->add_order_note( sprintf( __( '"%s" email sent to customer.', 'jfb-wc-quotes-advanced' ), $label ), false, false );
+        jfbwqa_write_log( "Custom event '{$label}' email SENT successfully for order #{$order_id}." );
+        return true;
+    }
+
+    $error_msg = sprintf( __( 'Failed sending "%1$s" email for Order #%2$s via wp_mail().', 'jfb-wc-quotes-advanced' ), $label, $order->get_order_number() );
+    $order->add_order_note( $error_msg, false, false );
+    jfbwqa_write_log( "ERROR: wp_mail() failed for custom event '{$label}', order #{$order_id}." );
+    return false;
 }
 
 /**
@@ -1935,6 +2194,14 @@ function jfbwqa_settings_init() {
         'jfbwqa_sanitize_options'     // Sanitization callback
     );
 
+    // v2.3: custom editable email events save on the same Save All Settings
+    // button (same settings group), in their own option.
+    register_setting(
+        'jfbwqa_settings_group',
+        JFBWQA_CUSTOM_EVENTS_OPTION,
+        'jfbwqa_sanitize_custom_events'
+    );
+
     // General Settings Section
     add_settings_section('jfbwqa_section_general', __('General Settings', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_section_general_desc', JFBWQA_SETTINGS_SLUG);
     add_settings_field( 'hook_name', __('JetFormBuilder Hook Name', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_general', ['key' => 'hook_name', 'type' => 'text', 'desc' => __('Custom filter hook used in JFB form.', 'jfb-wc-quotes-advanced')] );
@@ -2369,6 +2636,126 @@ function jfbwqa_render_field_wp_editor( $args ) {
     if (isset($args['desc'])) printf('<p class="description">%s</p>', wp_kses_post($args['desc']));
 }
 
+/**
+ * Render the editable fields for one custom event inside its tab. Field
+ * names nest under JFBWQA_CUSTOM_EVENTS_OPTION so they save on the main
+ * settings form. Rename/visibility/order are handled in the left rail.
+ */
+function jfbwqa_render_custom_event_fields( $slug, $event ) {
+    $base = JFBWQA_CUSTOM_EVENTS_OPTION . '[' . $slug . ']';
+
+    $table_labels = [
+        'show_image'       => __( 'Show product images', 'jfb-wc-quotes-advanced' ),
+        'show_unit_price'  => __( 'Show unit price column', 'jfb-wc-quotes-advanced' ),
+        'show_line_total'  => __( 'Show line total column', 'jfb-wc-quotes-advanced' ),
+        'show_subtotal'    => __( 'Show subtotal row', 'jfb-wc-quotes-advanced' ),
+        'show_shipping'    => __( 'Show shipping row(s)', 'jfb-wc-quotes-advanced' ),
+        'show_fees'        => __( 'Show fee row(s)', 'jfb-wc-quotes-advanced' ),
+        'show_discount'    => __( 'Show discount row', 'jfb-wc-quotes-advanced' ),
+        'show_tax'         => __( 'Show tax row', 'jfb-wc-quotes-advanced' ),
+        'show_grand_total' => __( 'Show grand total row', 'jfb-wc-quotes-advanced' ),
+    ];
+    ?>
+    <input type="hidden" name="<?php echo esc_attr( $base ); ?>[label]" value="<?php echo esc_attr( $event['label'] ); ?>" />
+    <table class="form-table" role="presentation">
+        <tr>
+            <th scope="row"><label for="<?php echo esc_attr( $slug ); ?>_subject"><?php esc_html_e( 'Email Subject', 'jfb-wc-quotes-advanced' ); ?></label></th>
+            <td><input type="text" id="<?php echo esc_attr( $slug ); ?>_subject" class="regular-text" name="<?php echo esc_attr( $base ); ?>[email_subject]" value="<?php echo esc_attr( $event['email_subject'] ); ?>" /></td>
+        </tr>
+        <tr>
+            <th scope="row"><label for="<?php echo esc_attr( $slug ); ?>_heading"><?php esc_html_e( 'Email Heading', 'jfb-wc-quotes-advanced' ); ?></label></th>
+            <td><input type="text" id="<?php echo esc_attr( $slug ); ?>_heading" class="regular-text" name="<?php echo esc_attr( $base ); ?>[email_heading]" value="<?php echo esc_attr( $event['email_heading'] ); ?>" /></td>
+        </tr>
+        <tr>
+            <th scope="row"><label for="<?php echo esc_attr( $slug ); ?>_reply_to"><?php esc_html_e( 'Reply-To Email', 'jfb-wc-quotes-advanced' ); ?></label></th>
+            <td><input type="email" id="<?php echo esc_attr( $slug ); ?>_reply_to" class="regular-text" name="<?php echo esc_attr( $base ); ?>[email_reply_to]" value="<?php echo esc_attr( $event['email_reply_to'] ); ?>" /></td>
+        </tr>
+        <tr>
+            <th scope="row"><label for="<?php echo esc_attr( $slug ); ?>_cc"><?php esc_html_e( 'CC Email', 'jfb-wc-quotes-advanced' ); ?></label></th>
+            <td><input type="email" id="<?php echo esc_attr( $slug ); ?>_cc" class="regular-text" name="<?php echo esc_attr( $base ); ?>[email_cc]" value="<?php echo esc_attr( $event['email_cc'] ); ?>" /></td>
+        </tr>
+        <tr>
+            <th scope="row"><label for="<?php echo esc_attr( $slug ); ?>_body"><?php esc_html_e( 'Email Body', 'jfb-wc-quotes-advanced' ); ?></label></th>
+            <td>
+                <textarea id="<?php echo esc_attr( $slug ); ?>_body" name="<?php echo esc_attr( $base ); ?>[email_body]" rows="8" class="large-text code"><?php echo esc_textarea( $event['email_body'] ); ?></textarea>
+                <p class="description"><?php esc_html_e( 'Supports {order_number}, {customer_first_name}, {customer_name}, {site_title}, {[your_mapped_field]}, and [Order Details Table] (the order cart).', 'jfb-wc-quotes-advanced' ); ?></p>
+            </td>
+        </tr>
+    </table>
+
+    <h3><?php esc_html_e( 'Order Details Table (the cart)', 'jfb-wc-quotes-advanced' ); ?></h3>
+    <p class="description"><?php esc_html_e( 'Controls what appears in the [Order Details Table] placeholder for this event.', 'jfb-wc-quotes-advanced' ); ?></p>
+    <table class="form-table" role="presentation">
+        <?php foreach ( $table_labels as $tkey => $tlabel ) :
+            $field_id = $slug . '_table_' . $tkey;
+            ?>
+        <tr>
+            <th scope="row"><?php echo esc_html( $tlabel ); ?></th>
+            <td>
+                <input type="checkbox" id="<?php echo esc_attr( $field_id ); ?>" name="<?php echo esc_attr( $base ); ?>[table][<?php echo esc_attr( $tkey ); ?>]" value="1" <?php checked( ! empty( $event['table'][ $tkey ] ) ); ?> />
+                <label for="<?php echo esc_attr( $field_id ); ?>"><span class="description"><?php echo esc_html( $tlabel ); ?></span></label>
+            </td>
+        </tr>
+        <?php endforeach; ?>
+    </table>
+
+    <p class="jfbwqa-event-delete-wrap">
+        <button type="button" class="button button-link-delete jfbwqa-delete-event" data-slug="<?php echo esc_attr( $slug ); ?>">
+            <?php esc_html_e( 'Delete this event', 'jfb-wc-quotes-advanced' ); ?>
+        </button>
+    </p>
+    <?php
+}
+
+/**
+ * Sanitize the custom-events option. Labels are preserved from the stored
+ * value (renaming happens via the left-rail registry AJAX, not this form).
+ */
+function jfbwqa_sanitize_custom_events( $input ) {
+    $existing = jfbwqa_get_custom_events();
+    $output   = [];
+
+    if ( ! is_array( $input ) ) {
+        return $output;
+    }
+
+    $table_keys = array_keys( jfbwqa_default_table_config() );
+
+    foreach ( $input as $slug => $data ) {
+        $slug = sanitize_key( $slug );
+        if ( ! jfbwqa_is_custom_event_slug( $slug ) || ! is_array( $data ) ) {
+            continue;
+        }
+
+        $event = jfbwqa_default_custom_event();
+
+        // Label is authoritative from the stored value / hidden round-trip;
+        // the rail rename writes the display override to the registry.
+        if ( isset( $existing[ $slug ]['label'] ) ) {
+            $event['label'] = $existing[ $slug ]['label'];
+        }
+        if ( isset( $data['label'] ) && $data['label'] !== '' ) {
+            $event['label'] = sanitize_text_field( wp_unslash( $data['label'] ) );
+        }
+
+        $event['email_subject']  = sanitize_text_field( wp_unslash( $data['email_subject'] ?? '' ) );
+        $event['email_heading']  = sanitize_text_field( wp_unslash( $data['email_heading'] ?? '' ) );
+        $event['email_reply_to'] = sanitize_email( $data['email_reply_to'] ?? '' );
+        $event['email_cc']       = sanitize_email( $data['email_cc'] ?? '' );
+        $event['email_body']     = wp_kses_post( wp_unslash( $data['email_body'] ?? '' ) );
+
+        $table = [];
+        foreach ( $table_keys as $tkey ) {
+            $table[ $tkey ] = ! empty( $data['table'][ $tkey ] );
+        }
+        $event['table'] = $table;
+
+        $output[ $slug ] = $event;
+    }
+
+    return $output;
+}
+
 // --- Sanitization Callback for General Settings ---
 function jfbwqa_sanitize_options( $input ) {
     $output = [];
@@ -2448,12 +2835,16 @@ function jfbwqa_enqueue_settings_app_assets( $hook ) {
             'ajaxUrl' => admin_url( 'admin-ajax.php' ),
             'nonce'   => wp_create_nonce( 'jfbwqa_registry' ),
             'i18n'    => [
-                'saved'   => __( 'Order events saved.', 'jfb-wc-quotes-advanced' ),
-                'error'   => __( 'Could not save order events. Please try again.', 'jfb-wc-quotes-advanced' ),
-                'saving'  => __( 'Saving…', 'jfb-wc-quotes-advanced' ),
-                'show'    => __( 'Show in order actions dropdown', 'jfb-wc-quotes-advanced' ),
-                'hide'    => __( 'Hide from order actions dropdown', 'jfb-wc-quotes-advanced' ),
-                'settings'=> __( 'Settings', 'jfb-wc-quotes-advanced' ),
+                'saved'        => __( 'Order events saved.', 'jfb-wc-quotes-advanced' ),
+                'error'        => __( 'Could not save order events. Please try again.', 'jfb-wc-quotes-advanced' ),
+                'saving'       => __( 'Saving…', 'jfb-wc-quotes-advanced' ),
+                'show'         => __( 'Show in order actions dropdown', 'jfb-wc-quotes-advanced' ),
+                'hide'         => __( 'Hide from order actions dropdown', 'jfb-wc-quotes-advanced' ),
+                'settings'     => __( 'Settings', 'jfb-wc-quotes-advanced' ),
+                'adding'       => __( 'Creating event…', 'jfb-wc-quotes-advanced' ),
+                'deleting'     => __( 'Deleting event…', 'jfb-wc-quotes-advanced' ),
+                'confirmDelete'=> __( 'Delete this email event? This cannot be undone.', 'jfb-wc-quotes-advanced' ),
+                'unsavedNote'  => __( 'Note: adding or deleting an event reloads this page; save other edits first.', 'jfb-wc-quotes-advanced' ),
             ],
         ]
     );
@@ -2548,6 +2939,55 @@ function jfbwqa_ajax_registry_rename() {
             'label' => $label,
         ]
     );
+}
+
+add_action( 'wp_ajax_jfbwqa_registry_add_event', 'jfbwqa_ajax_registry_add_event' );
+function jfbwqa_ajax_registry_add_event() {
+    jfbwqa_registry_ajax_verify();
+
+    $label  = isset( $_POST['label'] ) ? sanitize_text_field( wp_unslash( $_POST['label'] ) ) : '';
+    $slug   = jfbwqa_generate_custom_event_slug();
+    $events = jfbwqa_get_custom_events();
+
+    $events[ $slug ] = jfbwqa_default_custom_event( $label );
+    jfbwqa_save_custom_events( $events );
+
+    // Merge so the new event lands in the registry with a sort order/visibility.
+    jfbwqa_get_merged_event_registry( true );
+
+    wp_send_json_success(
+        [
+            'slug'  => $slug,
+            'label' => $events[ $slug ]['label'],
+        ]
+    );
+}
+
+add_action( 'wp_ajax_jfbwqa_registry_delete_event', 'jfbwqa_ajax_registry_delete_event' );
+function jfbwqa_ajax_registry_delete_event() {
+    jfbwqa_registry_ajax_verify();
+
+    $slug = isset( $_POST['slug'] ) ? sanitize_key( wp_unslash( $_POST['slug'] ) ) : '';
+
+    if ( ! jfbwqa_is_custom_event_slug( $slug ) ) {
+        wp_send_json_error( [ 'message' => __( 'Only custom events can be deleted.', 'jfb-wc-quotes-advanced' ) ] );
+    }
+
+    $events = jfbwqa_get_custom_events();
+    if ( ! isset( $events[ $slug ] ) ) {
+        wp_send_json_error( [ 'message' => __( 'Unknown custom event.', 'jfb-wc-quotes-advanced' ) ] );
+    }
+
+    unset( $events[ $slug ] );
+    jfbwqa_save_custom_events( $events );
+
+    $registry = jfbwqa_get_merged_event_registry( false );
+    if ( isset( $registry[ $slug ] ) ) {
+        unset( $registry[ $slug ] );
+        jfbwqa_save_event_registry( $registry );
+    }
+
+    wp_send_json_success( [ 'slug' => $slug ] );
 }
 
 // --- Render the Main Settings Page ---
@@ -2767,6 +3207,12 @@ function jfbwqa_render_settings_page() {
                     </li>
                     <?php endforeach; ?>
                 </ul>
+                <div class="jfbwqa-rail-add">
+                    <button type="button" class="button button-secondary jfbwqa-add-event">
+                        <span class="dashicons dashicons-plus-alt2"></span>
+                        <?php esc_html_e( 'Add Email Event', 'jfb-wc-quotes-advanced' ); ?>
+                    </button>
+                </div>
                 <div class="jfbwqa-rail-tabs">
                     <button type="button" class="button jfbwqa-rail-tab jfbwqa-rail-tab--intake is-active" data-panel="intake">
                         <?php esc_html_e( 'Intake / Form & Cart', 'jfb-wc-quotes-advanced' ); ?>
@@ -2781,9 +3227,12 @@ function jfbwqa_render_settings_page() {
                 <form action="options.php" method="post" enctype="multipart/form-data" class="jfbwqa-settings-form">
                     <?php settings_fields( 'jfbwqa_settings_group' ); ?>
 
-                <?php foreach ( $event_registry as $slug => $entry ) :
+                <?php
+                $custom_events = jfbwqa_get_custom_events();
+                foreach ( $event_registry as $slug => $entry ) :
                     $source       = $entry['source'] ?? 'woocommerce';
                     $is_plugin    = ( $source === 'plugin' );
+                    $is_custom    = ( $source === 'custom' );
                     $event_sections = jfbwqa_get_event_settings_sections( $slug );
                     ?>
                 <div class="jfbwqa-pane-panel jfbwqa-pane-panel--event" data-slug="<?php echo esc_attr( $slug ); ?>" hidden>
@@ -2792,7 +3241,9 @@ function jfbwqa_render_settings_page() {
                         <code><?php echo esc_html( $slug ); ?></code>
                     </p>
 
-                    <?php if ( $is_plugin && ! empty( $event_sections ) ) : ?>
+                    <?php if ( $is_custom && isset( $custom_events[ $slug ] ) ) : ?>
+                        <?php jfbwqa_render_custom_event_fields( $slug, $custom_events[ $slug ] ); ?>
+                    <?php elseif ( $is_plugin && ! empty( $event_sections ) ) : ?>
                         <?php jfbwqa_render_settings_sections_by_id( $event_sections ); ?>
                         <?php jfbwqa_render_event_template_viewer( $slug ); ?>
                     <?php else : ?>
