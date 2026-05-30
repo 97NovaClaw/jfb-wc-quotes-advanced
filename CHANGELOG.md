@@ -4,6 +4,31 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [1.28.1] - 2026-05-30
+
+### Fixed
+- **Cart now empties automatically after a successful estimate-request
+  submission.** Previously, after the JFB form fired and an order was
+  created, `WC()->cart` still held the same items. The customer would
+  see them on their next visit (or in the popup if they reopened it),
+  giving the impression the form hadn't actually done anything.
+  Now `WC()->cart->empty_cart( true )` is called immediately after
+  `$order->save()` succeeds, clearing both the session cart and the
+  persistent cart for logged-in users.
+
+### Notes for the front-end side
+The companion BBHQ Code Snippet 15 ("Quote cart popup wiring (JS)")
+also needs an update so the header cart count refreshes immediately
+without a page reload. The snapshot at
+`snapshots/snippet-bbhq-quote-cart-wiring.php` (workspace root) has
+the new section 9 that triggers `wc_fragment_refresh` on
+`jet-form-builder/ajax/on-success`. The plugin works correctly even
+without that snippet update - the cart IS empty server-side; the
+header just won't reflect it until the next fragments refresh
+(which happens on any subsequent cart action or page load).
+
+---
+
 ## [1.28.0] - 2026-05-24
 
 ### Changed - Single dynamic metabox replaces the modal stack

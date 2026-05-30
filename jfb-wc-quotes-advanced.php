@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI. HPOS-compatible; creates orders in-process via wc_create_order() (no REST credentials required).
- * Version:     1.28.0
+ * Version:     1.28.1
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '1.28.0' );
+define( 'JFBWQA_VERSION', '1.28.1' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_SETTINGS_SLUG', 'jfbwqa-settings' ); // Menu slug for settings page
 
@@ -810,6 +810,37 @@ function jfbwqa_handle_form_submission( $result, $request, $action_handler ) {
     }
 
     jfbwqa_write_log( "SUCCESS: Created WC order #{$new_order_id} via wc_create_order()." );
+
+    // v1.28.1: Empty the user's WC cart now that the request has been
+    // captured as an order. Without this, the next time the customer opens
+    // the popup or visits the cart page they'll see the same items still
+    // in their cart, even though they were "submitted" already.
+    //
+    // Guards:
+    //   - WC() must be loaded (admin-ajax requests originating from a
+    //     frontend page have it; backend cron-style invocations don't).
+    //   - WC()->cart must be a real WC_Cart instance (it can be null in
+    //     non-frontend contexts).
+    //   - empty_cart( $clear_persistent_cart=true ) clears the persistent
+    //     cart row for logged-in users too, so subsequent sessions don't
+    //     resurrect the items.
+    //
+    // The browser's cart fragments are stale at this point - they'll
+    // refresh on the next wc_fragment_refresh trigger, which the front-end
+    // wiring (BBHQ snippet 15) fires on jet-form-builder/ajax/on-success.
+    if ( function_exists( 'WC' ) && WC()->cart instanceof WC_Cart ) {
+        try {
+            WC()->cart->empty_cart( true );
+            jfbwqa_write_log( "Cleared WC cart after estimate order #{$new_order_id} creation." );
+        } catch ( Exception $e ) {
+            // Non-fatal. Order is already saved; leave a note for the
+            // admin so they know the cart wasn't cleared automatically.
+            jfbwqa_write_log( 'WARNING: WC()->cart->empty_cart() threw after estimate order #' . $new_order_id . ': ' . $e->getMessage() );
+            $order->add_order_note( __( 'Note: WC cart could not be auto-emptied after order creation. Customer may see stale cart on next visit.', 'jfb-wc-quotes-advanced' ), false, false );
+        }
+    } else {
+        jfbwqa_write_log( "DEBUG: WC()->cart not available during submission for order #{$new_order_id}; cart not auto-emptied." );
+    }
 
     // Optional: surface the order ID back to JFB action chain so downstream
     // actions (e.g., redirects, additional emails) can reference it.
