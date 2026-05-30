@@ -4,6 +4,19 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [2.3.1] - 2026-02-28
+
+### Fixed
+- **Eye toggle (hide) had no effect on the order-actions dropdown.** The
+  late `woocommerce_order_actions` filter skipped hidden events when
+  building its list, but the "safety net" loop then re-added any action not
+  already in the list — which re-added the very events that were just
+  hidden. The safety net now only appends actions the registry has never
+  seen; events present-but-hidden in the registry stay removed. Affected
+  both plugin events and WooCommerce core events.
+
+---
+
 ## [2.3.0] - 2026-02-28
 
 ### Added

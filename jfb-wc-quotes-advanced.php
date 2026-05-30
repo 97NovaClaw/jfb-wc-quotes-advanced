@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI. HPOS-compatible; creates orders in-process via wc_create_order() (no REST credentials required).
- * Version:     2.3.0
+ * Version:     2.3.1
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '2.3.0' );
+define( 'JFBWQA_VERSION', '2.3.1' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_REGISTRY_OPTION', 'jfbwqa_event_registry' ); // Order-event registry (label, visible, order, source)
 define( 'JFBWQA_CUSTOM_EVENTS_OPTION', 'jfbwqa_custom_events' ); // User-created editable email events
@@ -1496,22 +1496,19 @@ function jfbwqa_apply_event_registry_to_actions( $actions ) {
         ];
     }
 
-    // Safety net: include any action missing from registry (should not happen post-merge).
+    // Safety net: include any action the registry has NEVER seen (e.g. one
+    // newly registered between merges). Actions that ARE in the registry but
+    // were hidden above must NOT be re-added here - otherwise the eye toggle
+    // would never actually remove anything from the dropdown.
     foreach ( $actions as $slug => $label ) {
-        $found = false;
-        foreach ( $entries as $entry ) {
-            if ( $entry['slug'] === $slug ) {
-                $found = true;
-                break;
-            }
+        if ( isset( $registry[ $slug ] ) ) {
+            continue; // registry already decided this action's visibility/order.
         }
-        if ( ! $found ) {
-            $entries[] = [
-                'slug'  => $slug,
-                'order' => PHP_INT_MAX,
-                'label' => $label,
-            ];
-        }
+        $entries[] = [
+            'slug'  => $slug,
+            'order' => PHP_INT_MAX,
+            'label' => $label,
+        ];
     }
 
     usort(
