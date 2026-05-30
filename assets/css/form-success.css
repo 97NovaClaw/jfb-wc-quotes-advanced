@@ -1,0 +1,27 @@
+/**
+ * JFBWQA — Form success display (v1.29)
+ *
+ * When form-success.js adds `.jfbwqa-submitted` to one of our JetFormBuilder
+ * forms, hide every field row (and the submit button row) so only the
+ * success message remains. The message lives in
+ * `.jet-form-builder-messages-wrap`, which is NOT a `.jet-form-builder-row`,
+ * so it stays visible.
+ */
+
+/* Hide all field rows + the submit row once the form has been submitted. */
+form.jet-form-builder.jfbwqa-submitted .jet-form-builder-row {
+    display: none !important;
+}
+
+/* Belt-and-suspenders: hide any stray bare field wrappers that aren't inside
+   a row (some JFB field types render the wrapper directly). The messages
+   wrap is excluded because it is not a .jet-form-builder__field. */
+form.jet-form-builder.jfbwqa-submitted > .jet-form-builder__field {
+    display: none !important;
+}
+
+/* Give the lone success message a little breathing room now that it stands
+   alone. */
+form.jet-form-builder.jfbwqa-submitted .jet-form-builder-messages-wrap {
+    margin: 0;
+}

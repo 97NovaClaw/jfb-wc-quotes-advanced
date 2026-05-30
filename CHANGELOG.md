@@ -4,6 +4,48 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [1.29.0] - 2026-05-30
+
+### Added
+- **"Form Submission" settings section** with a **Success Message**
+  field (Settings → JFB WC Quotes). Plain text — what you type is
+  what shows, so the mangled "u2014" (a backslash-stripped `\u2014`
+  em-dash that had been saved into the form's success message) cannot
+  recur. Default: `Your request was sent — we'll follow up by email
+  within 1 business day.`
+- **Success message now flows from the plugin.** On settings save, the
+  message is written into `_jf_messages.success` of every
+  JetFormBuilder form that uses the plugin's hook. JetFormBuilder still
+  renders the message natively; the plugin just keeps that meta in
+  sync. New helper `jfbwqa_get_hooked_form_ids()` discovers those forms
+  (cached in a transient, busted on form save or settings save).
+- **Hide-fields-on-success.** After a successful submission, every
+  field row and the submit button of our form(s) are hidden so only
+  the success message remains, until the form resets or the popup
+  closes. Implemented as `assets/js/form-success.js` +
+  `assets/css/form-success.css`, enqueued front-end and scoped to the
+  plugin's form IDs (unrelated forms on the page are untouched).
+  Restores the fields when a JetPopup reopens so returning visitors
+  see a fresh form.
+
+### Fixed
+- The literal `u2014` showing mid-sentence in the form success message.
+  Root cause: a `\u2014` em-dash escape had been saved into
+  JetFormBuilder's `_jf_messages.success` with the backslash stripped,
+  leaving the 5 characters `u2014`. The new plain-text setting + sync
+  replaces it with a real em-dash and prevents recurrence.
+
+### Migration notes
+- After pulling, visit Settings → JFB WC Quotes → Form Submission and
+  set your preferred Success Message, then Save. Saving rewrites the
+  success message of every form using the hook. (The live BBHQ form was
+  already corrected out-of-band, so this is only needed if you want to
+  change the wording.)
+- The hide-fields CSS targets `.jet-form-builder-row`; if a future JFB
+  version renames that wrapper, update `assets/css/form-success.css`.
+
+---
+
 ## [1.28.1] - 2026-05-30
 
 ### Fixed

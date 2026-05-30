@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI. HPOS-compatible; creates orders in-process via wc_create_order() (no REST credentials required).
- * Version:     1.28.1
+ * Version:     1.29.0
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '1.28.1' );
+define( 'JFBWQA_VERSION', '1.29.0' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_SETTINGS_SLUG', 'jfbwqa-settings' ); // Menu slug for settings page
 
@@ -127,6 +127,11 @@ function jfbwqa_get_options() {
         'shortcode_name'     => 'my_cart_json',
         'jetengine_keys'     => '', // Stored here, used for mapping options & placeholders
         'enable_debug'       => false,
+        // v1.29: Front-end form success message. Plain text (no HTML, no
+        // unicode escapes - what you type is what shows). On settings save
+        // this is synced into the _jf_messages.success of every JFB form
+        // that uses our hook, so JetFormBuilder renders it natively.
+        'form_success_message' => "Your request was sent — we'll follow up by email within 1 business day.",
         'email_subject'      => 'Your Estimate Request #{order_number}',
         'email_heading'      => 'Estimate Request Details',
         'email_reply_to'     => get_option('admin_email'),
@@ -623,6 +628,163 @@ function jfbwqa_init_form_hook() {
         jfbwqa_write_log("Initialized JFB custom filter hook: .../{$hook_tag}");
     } else {
          add_action('admin_notices', function() { echo '<div class="notice notice-warning"><p>' . esc_html__('JFB WC Quotes Advanced requires JetFormBuilder to be active.', 'jfb-wc-quotes-advanced') . '</p></div>'; });
+    }
+}
+
+/* =============================================================================
+   6.5) Form discovery + success-message sync (v1.29)
+   -----------------------------------------------------------------------------
+   "Our forms" = JetFormBuilder forms whose _jf_actions contains a call_hook
+   action targeting jfbwqa_options.hook_name. We need this list in two places:
+     - PHP, to sync the success message into _jf_messages.success on save.
+     - JS, localized so the front-end only hides fields on OUR forms (not, say,
+       an unrelated newsletter form on the same page).
+   Cached in a transient; busted whenever settings save or a JFB form saves.
+   ============================================================================= */
+
+/**
+ * Return an array of JFB form post IDs that call our hook.
+ *
+ * @param bool $force Bypass the transient cache.
+ * @return int[]
+ */
+function jfbwqa_get_hooked_form_ids( $force = false ) {
+    $cache_key = 'jfbwqa_hooked_form_ids';
+    if ( ! $force ) {
+        $cached = get_transient( $cache_key );
+        if ( is_array( $cached ) ) {
+            return $cached;
+        }
+    }
+
+    $options  = jfbwqa_get_options();
+    $hook_tag = ! empty( $options['hook_name'] ) ? sanitize_key( $options['hook_name'] ) : 'my_jfb_wc_estimate_form';
+
+    $form_ids = [];
+    $forms = get_posts( [
+        'post_type'      => 'jet-form-builder',
+        'posts_per_page' => -1,
+        'post_status'    => 'any',
+        'fields'         => 'ids',
+    ] );
+    foreach ( $forms as $form_id ) {
+        $actions_raw = get_post_meta( $form_id, '_jf_actions', true );
+        $actions     = is_string( $actions_raw ) ? json_decode( $actions_raw, true ) : ( is_array( $actions_raw ) ? $actions_raw : [] );
+        if ( ! is_array( $actions ) ) {
+            continue;
+        }
+        foreach ( $actions as $action ) {
+            $type = $action['type'] ?? '';
+            $hook = $action['settings']['call_hook']['hook_name'] ?? '';
+            if ( $type === 'call_hook' && sanitize_key( $hook ) === $hook_tag ) {
+                $form_ids[] = (int) $form_id;
+                break;
+            }
+        }
+    }
+
+    set_transient( $cache_key, $form_ids, DAY_IN_SECONDS );
+    return $form_ids;
+}
+
+/**
+ * Bust the hooked-form-ids cache when a JFB form is saved.
+ */
+add_action( 'save_post_jet-form-builder', 'jfbwqa_bust_hooked_form_cache' );
+function jfbwqa_bust_hooked_form_cache() {
+    delete_transient( 'jfbwqa_hooked_form_ids' );
+}
+
+/**
+ * Enqueue the front-end "hide fields on success" assets, scoped to pages
+ * where one of our forms could appear. We can't cheaply know which page
+ * renders the form (it lives in a global popup), so we enqueue site-wide on
+ * the front end but keep the payload tiny and gated on there being at least
+ * one hooked form.
+ */
+add_action( 'wp_enqueue_scripts', 'jfbwqa_enqueue_form_success_assets' );
+function jfbwqa_enqueue_form_success_assets() {
+    if ( is_admin() ) {
+        return;
+    }
+    $form_ids = jfbwqa_get_hooked_form_ids();
+    if ( empty( $form_ids ) ) {
+        return; // No forms use our hook; nothing to enhance.
+    }
+
+    $base = plugin_dir_url( __FILE__ ) . 'assets/';
+
+    wp_enqueue_style(
+        'jfbwqa-form-success',
+        $base . 'css/form-success.css',
+        [],
+        JFBWQA_VERSION
+    );
+    wp_enqueue_script(
+        'jfbwqa-form-success',
+        $base . 'js/form-success.js',
+        [],
+        JFBWQA_VERSION,
+        true
+    );
+
+    $options = jfbwqa_get_options();
+    wp_localize_script( 'jfbwqa-form-success', 'jfbwqaForm', [
+        'formIds' => array_values( array_map( 'intval', $form_ids ) ),
+        'message' => (string) ( $options['form_success_message'] ?? '' ),
+    ] );
+}
+
+/**
+ * Write the configured success message into _jf_messages.success of every
+ * form that uses our hook. Runs whenever the plugin options are saved.
+ *
+ * This is what lets the plugin "own" the success text: JetFormBuilder still
+ * renders the message from its own _jf_messages meta, we just keep that meta
+ * in sync with the plugin setting. Because the setting is plain text, the
+ * mangled "u2014" (a backslash-stripped \u2014 em-dash) cannot recur.
+ *
+ * @param mixed $old Old option value.
+ * @param mixed $new New option value.
+ */
+add_action( 'update_option_' . JFBWQA_OPTION_NAME, 'jfbwqa_sync_success_message_on_save', 10, 2 );
+add_action( 'add_option_' . JFBWQA_OPTION_NAME, 'jfbwqa_sync_success_message_on_add', 10, 2 );
+function jfbwqa_sync_success_message_on_add( $option, $value ) {
+    jfbwqa_sync_success_message_to_forms( $value );
+}
+function jfbwqa_sync_success_message_on_save( $old, $new ) {
+    jfbwqa_sync_success_message_to_forms( $new );
+}
+
+/**
+ * @param array $options The (new) plugin options array.
+ */
+function jfbwqa_sync_success_message_to_forms( $options ) {
+    // Always recompute the form list (the hook_name may have just changed).
+    delete_transient( 'jfbwqa_hooked_form_ids' );
+
+    $message = '';
+    if ( is_array( $options ) && isset( $options['form_success_message'] ) ) {
+        $message = (string) $options['form_success_message'];
+    }
+    if ( $message === '' ) {
+        return; // Nothing to sync; leave existing form messages untouched.
+    }
+
+    $form_ids = jfbwqa_get_hooked_form_ids( true );
+    foreach ( $form_ids as $form_id ) {
+        $raw      = get_post_meta( $form_id, '_jf_messages', true );
+        $messages = is_string( $raw ) ? json_decode( $raw, true ) : ( is_array( $raw ) ? $raw : [] );
+        if ( ! is_array( $messages ) ) {
+            $messages = [];
+        }
+        if ( ( $messages['success'] ?? null ) === $message ) {
+            continue; // Already in sync.
+        }
+        $messages['success'] = $message;
+        // JFB stores _jf_messages as a JSON string.
+        update_post_meta( $form_id, '_jf_messages', wp_slash( wp_json_encode( $messages ) ) );
+        jfbwqa_write_log( "Synced success message into JFB form #{$form_id}." );
     }
 }
 
@@ -1529,6 +1691,21 @@ function jfbwqa_settings_init() {
     add_settings_field( 'jetengine_keys', __('JetEngine Meta Keys (for mapping/placeholders)', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_je_keys_textarea', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_general', ['key' => 'jetengine_keys', 'desc' => __('One key per line. Makes them available as *JE_meta*.key_name in mapping dropdowns and {[key_name]} in emails.', 'jfb-wc-quotes-advanced')] );
     add_settings_field( 'enable_debug', __('Enable Debug Logging', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_general', ['key' => 'enable_debug', 'desc' => sprintf(__('Log to %s.', 'jfb-wc-quotes-advanced'), '<code>' . esc_html(trailingslashit(jfbwqa_plugin_dir()) . 'debug/debug.log') . '</code>')] );
 
+    // v1.29: Form Submission section - controls the on-page success message
+    // and the hide-fields-on-success behavior.
+    add_settings_section( 'jfbwqa_section_form', __( 'Form Submission', 'jfb-wc-quotes-advanced' ), 'jfbwqa_render_section_form_desc', JFBWQA_SETTINGS_SLUG );
+    add_settings_field(
+        'form_success_message',
+        __( 'Success Message', 'jfb-wc-quotes-advanced' ),
+        'jfbwqa_render_field_textarea',
+        JFBWQA_SETTINGS_SLUG,
+        'jfbwqa_section_form',
+        [
+            'key'  => 'form_success_message',
+            'desc' => __( 'Shown on the form after a successful submission. Plain text only. On save, this is written into the success message of every JetFormBuilder form that uses the hook above, and all other fields are hidden so only this message remains until the popup closes.', 'jfb-wc-quotes-advanced' ),
+        ]
+    );
+
     // Email Settings Section
      add_settings_section('jfbwqa_section_email', __('Estimate Email Settings', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_section_email_desc', JFBWQA_SETTINGS_SLUG);
     add_settings_field( 'email_subject', __('Email Subject', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'email_subject', 'type' => 'text'] );
@@ -1626,6 +1803,9 @@ function jfbwqa_settings_init() {
 }
 function jfbwqa_render_section_general_desc() {
     echo '<p>' . esc_html__( 'Configure how this plugin integrates with JetFormBuilder. As of v1.25, orders are created in-process via wc_create_order(); no WooCommerce REST API credentials are required.', 'jfb-wc-quotes-advanced' ) . '</p>';
+}
+function jfbwqa_render_section_form_desc() {
+    echo '<p>' . esc_html__( 'Controls what the customer sees on the form right after they submit a request.', 'jfb-wc-quotes-advanced' ) . '</p>';
 }
 function jfbwqa_render_section_email_desc() {
      echo '<p>' . esc_html__('Customize the email sent via the order action for the initial estimate request confirmation.', 'jfb-wc-quotes-advanced') . '</p>';
@@ -1813,6 +1993,10 @@ function jfbwqa_sanitize_options( $input ) {
     $output['shortcode_name']  = sanitize_key($input['shortcode_name'] ?? 'my_cart_json');
     $output['jetengine_keys']  = sanitize_textarea_field($input['jetengine_keys'] ?? '');
     $output['enable_debug']    = isset($input['enable_debug']) ? filter_var($input['enable_debug'], FILTER_VALIDATE_BOOLEAN) : false;
+    // v1.29: Plain-text success message. sanitize_textarea_field strips tags
+    // and normalizes whitespace but preserves the literal characters the
+    // admin typed (so a real em-dash stays an em-dash; nothing becomes u2014).
+    $output['form_success_message'] = sanitize_textarea_field( $input['form_success_message'] ?? '' );
     $output['email_subject']   = sanitize_text_field($input['email_subject'] ?? '');
     $output['email_heading']   = sanitize_text_field($input['email_heading'] ?? '');
     $output['email_reply_to']  = sanitize_email($input['email_reply_to'] ?? '');
