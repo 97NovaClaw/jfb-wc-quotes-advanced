@@ -4,6 +4,28 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [2.6.0] - 2026-02-28
+
+### Added
+- **Per-order "Response" message box.** Each event tab has a new **Custom
+  message box** toggle. When on, the order screen's Email Action Composer
+  shows a message field for that action (revealed when you pick the action
+  in the Order actions dropdown). Whatever you type is added to the email
+  under a configurable **Response heading** (default "Response") — and the
+  heading + block are included **only when the message isn't empty**.
+  - Works for the Estimate Request, Prepared Quote, and custom events.
+  - Stored per order in `_jfbwqa_responses` (keyed by action slug).
+- **"Hide Additional Details" per-event toggle.** Each event tab can hide
+  the email's "Additional Details" section (the extra JetEngine meta
+  fields) for that specific action's email.
+
+### Notes
+- The Response field lives in the existing "JFBWQA: Email Action Composer"
+  metabox (top of the order screen's main column), which already switches
+  its contents based on the selected Order action.
+
+---
+
 ## [2.5.1] - 2026-02-28
 
 ### Fixed

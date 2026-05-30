@@ -37,6 +37,23 @@ if ( ! empty( $email_body_content ) ) {
 
 <?php
 /*
+ * v2.6: Custom "Response" message (from the order screen's Email Action
+ * Composer). Renders under its configured heading ONLY when non-empty.
+ */
+$jfbwqa_response         = isset( $jfbwqa_response ) ? (string) $jfbwqa_response : '';
+$jfbwqa_response_heading = isset( $jfbwqa_response_heading ) && $jfbwqa_response_heading !== ''
+    ? $jfbwqa_response_heading
+    : __( 'Response', 'jfb-wc-quotes-advanced' );
+if ( trim( wp_strip_all_tags( $jfbwqa_response ) ) !== '' ) {
+    echo '<div style="margin-top:15px; padding-top:15px; border-top:1px solid #eee;">';
+    echo '<h2>' . esc_html( $jfbwqa_response_heading ) . '</h2>';
+    echo wp_kses_post( wpautop( wptexturize( $jfbwqa_response ) ) );
+    echo '</div>';
+}
+?>
+
+<?php
+/*
  * @hooked WC_Emails::order_details() Shows the order details table.
  * @hooked WC_Structured_Data::generate_order_data() Generates structured data.
  * @hooked WC_Structured_Data::output_structured_data() Outputs structured data.
@@ -85,7 +102,10 @@ if ( !empty( $additional_content ) ) {
 
  $je_keys = !empty($je_keys_string) ? preg_split( '/\r\n|\r|\n/', trim($je_keys_string) ) : [];
 
- if (!empty($je_keys)) {
+ // v2.6: per-event toggle to hide the "Additional Details" meta section.
+ $jfbwqa_show_additional_details = ! isset( $jfbwqa_show_additional_details ) || $jfbwqa_show_additional_details;
+
+ if (!empty($je_keys) && $jfbwqa_show_additional_details) {
     $show_je_details_section = false; // Flag to check if any JE meta has value
     $je_meta_table_content = ''; // Build content first
 

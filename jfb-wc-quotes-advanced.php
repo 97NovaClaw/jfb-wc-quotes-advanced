@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI. HPOS-compatible; creates orders in-process via wc_create_order() (no REST credentials required).
- * Version:     2.5.1
+ * Version:     2.6.0
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '2.5.1' );
+define( 'JFBWQA_VERSION', '2.6.0' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_REGISTRY_OPTION', 'jfbwqa_event_registry' ); // Order-event registry (label, visible, order, source)
 define( 'JFBWQA_CUSTOM_EVENTS_OPTION', 'jfbwqa_custom_events' ); // User-created editable email events
@@ -148,12 +148,20 @@ function jfbwqa_get_options() {
         'email_reply_to'     => get_option('admin_email'),
         'email_cc'           => '',
         'email_default_body' => "Thank you for your estimate request. We have received the following details:\n\n[Order Details Table]\n\nWe will review your request and get back to you shortly.\n\nRegards,\n{site_title}",
+        // v2.6: per-event Response box + Additional Details visibility (estimate).
+        'est_enable_response_box'     => false,
+        'est_response_heading'        => 'Response',
+        'est_hide_additional_details' => false,
         // Defaults for the new Quote Email
         'quote_email_subject'      => 'Your Quote #{order_number} is Ready',
         'quote_email_heading'      => 'Your Prepared Quote',
         'quote_email_reply_to'   => get_option('admin_email'), // Default for new field
         'quote_email_cc'         => '', // Default for new field
         'quote_email_default_body' => "Hello {customer_first_name},\n\nYour quote is ready! Please find the details below:\n\n[Order Details Table]\n\nIf you have any questions, please let us know.\n\nRegards,\n{site_title}", // Removed {additional_message_from_admin}
+        // v2.6: per-event Response box + Additional Details visibility (quote).
+        'quote_enable_response_box'     => false,
+        'quote_response_heading'        => 'Response',
+        'quote_hide_additional_details' => false,
         'display_discount_in_quote' => false, // [DEPRECATED v1.27] superseded by quote_table_show_discount, kept for back-compat reads.
 
         // v1.27: Estimate Request email - Order Details Table defaults.
@@ -1278,6 +1286,10 @@ function jfbwqa_default_custom_event( $label = '' ) {
         'email_reply_to' => get_option( 'admin_email' ),
         'email_cc'       => '',
         'email_body'     => "Hello {customer_first_name},\n\n[Order Details Table]\n\nRegards,\n{site_title}",
+        // v2.6: per-event Response box + Additional Details visibility.
+        'enable_response_box'     => false,
+        'response_heading'        => 'Response',
+        'hide_additional_details' => false,
         'table'          => [
             'show_image'       => true,
             'show_unit_price'  => true,
@@ -1385,14 +1397,16 @@ function jfbwqa_handle_custom_event_action( $order ) {
         return false;
     }
 
-    return jfbwqa_send_custom_event_email( $order, $event );
+    return jfbwqa_send_custom_event_email( $order, $event, $slug );
 }
 
 /**
  * Build + send a custom event's email for an order. Mirrors the
  * prepared-quote sender but reads everything from the event config.
+ *
+ * @param string $slug Optional event slug (for the per-order Response lookup).
  */
-function jfbwqa_send_custom_event_email( WC_Order $order, array $event ) {
+function jfbwqa_send_custom_event_email( WC_Order $order, array $event, $slug = '' ) {
     $order_id = $order->get_id();
     $label    = $event['label'] ?? __( 'Custom Email', 'jfb-wc-quotes-advanced' );
     jfbwqa_write_log( "Custom event '{$label}' triggered for order ID: {$order_id}" );
@@ -1423,6 +1437,10 @@ function jfbwqa_send_custom_event_email( WC_Order $order, array $event ) {
     $template_name       = 'emails/customer-estimate-request.php';
     $default_plugin_path = jfbwqa_plugin_dir() . 'woocommerce/';
 
+    // v2.6: Response message + Additional Details visibility for this event.
+    $custom_response     = ( ! empty( $event['enable_response_box'] ) && $slug !== '' ) ? jfbwqa_get_order_response( $order, $slug ) : '';
+    $custom_resp_heading = ! empty( $event['response_heading'] ) ? $event['response_heading'] : __( 'Response', 'jfb-wc-quotes-advanced' );
+
     $mailer = WC()->mailer();
     ob_start();
     wc_get_template(
@@ -1436,6 +1454,9 @@ function jfbwqa_send_custom_event_email( WC_Order $order, array $event ) {
             'plain_text'            => false,
             'email'                 => $mailer,
             'show_customer_details' => false,
+            'jfbwqa_response'                => $custom_response,
+            'jfbwqa_response_heading'        => $custom_resp_heading,
+            'jfbwqa_show_additional_details' => empty( $event['hide_additional_details'] ),
         ],
         'jfb-wc-quotes-advanced/',
         $default_plugin_path
@@ -1573,7 +1594,7 @@ function jfbwqa_dispatch_event_email( $slug, $order ) {
     }
     if ( jfbwqa_is_custom_event_slug( $slug ) ) {
         $event = jfbwqa_get_custom_event( $slug );
-        return $event ? jfbwqa_send_custom_event_email( $order, $event ) : false;
+        return $event ? jfbwqa_send_custom_event_email( $order, $event, $slug ) : false;
     }
     return false;
 }
@@ -1799,6 +1820,10 @@ function jfbwqa_handle_send_prepared_quote_action( $order ) {
     $template_name = 'emails/customer-estimate-request.php'; // Main email wrapper
     $default_plugin_path = jfbwqa_plugin_dir() . 'woocommerce/';
 
+    // v2.6: Response message + Additional Details visibility for this event.
+    $quote_event_opts = jfbwqa_get_event_email_options( 'jfbwqa_send_prepared_quote' );
+    $quote_response   = $quote_event_opts['enable_response_box'] ? jfbwqa_get_order_response( $order, 'jfbwqa_send_prepared_quote' ) : '';
+
     $mailer = WC()->mailer();
     ob_start();
     $template_args = [
@@ -1809,7 +1834,10 @@ function jfbwqa_handle_send_prepared_quote_action( $order ) {
            'sent_to_admin' => false,
            'plain_text' => false,
            'email' => $mailer,
-           'show_customer_details' => false // Hide for prepared quote email
+           'show_customer_details' => false, // Hide for prepared quote email
+           'jfbwqa_response' => $quote_response,
+           'jfbwqa_response_heading' => $quote_event_opts['response_heading'],
+           'jfbwqa_show_additional_details' => ! $quote_event_opts['hide_additional_details'],
        ];
     wc_get_template( $template_name, $template_args, 'jfb-wc-quotes-advanced/', $default_plugin_path );
     $email_html_content = ob_get_clean();
@@ -1935,6 +1963,10 @@ function jfbwqa_handle_order_action( $order ) {
          return;
     }
 
+    // v2.6: Response message + Additional Details visibility for this event.
+    $est_event_opts   = jfbwqa_get_event_email_options( 'jfbwqa_send_estimate_email' );
+    $est_response     = $est_event_opts['enable_response_box'] ? jfbwqa_get_order_response( $order, 'jfbwqa_send_estimate_email' ) : '';
+
     $mailer = WC()->mailer();
     ob_start();
     // *** MODIFIED: Pass the custom message and processed default body to the template ***
@@ -1946,7 +1978,10 @@ function jfbwqa_handle_order_action( $order ) {
            'sent_to_admin' => false,
            'plain_text' => false,
            'email' => $mailer,
-           'show_customer_details' => true // Explicitly show for initial email
+           'show_customer_details' => true, // Explicitly show for initial email
+           'jfbwqa_response' => $est_response,
+           'jfbwqa_response_heading' => $est_event_opts['response_heading'],
+           'jfbwqa_show_additional_details' => ! $est_event_opts['hide_additional_details'],
        ];
     // *** DEBUG LOGGING START ***
     // Log only essential parts of template_args to avoid memory issues
@@ -2462,6 +2497,9 @@ function jfbwqa_settings_init() {
     add_settings_field( 'email_reply_to', __('Reply-To Email', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'email_reply_to', 'type' => 'email'] );
     add_settings_field( 'email_cc', __('CC Email', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'email_cc', 'type' => 'email'] );
     add_settings_field( 'email_default_body', __('Email Body Template', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_wp_editor', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'email_default_body'] ); // Desc rendered in section callback
+    add_settings_field( 'est_enable_response_box', __('Custom message box', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_enable_response_box', 'desc' => __('Show a custom message box on the order screen for this action. What you type there is added to the email under the heading below (only when not empty).', 'jfb-wc-quotes-advanced')] );
+    add_settings_field( 'est_response_heading', __('Response heading', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_response_heading', 'type' => 'text', 'desc' => __('Heading shown above the custom message in the email. Default: Response.', 'jfb-wc-quotes-advanced')] );
+    add_settings_field( 'est_hide_additional_details', __('Hide "Additional Details"', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_hide_additional_details', 'desc' => __('Hide the "Additional Details" section (extra JetEngine meta fields) in this email.', 'jfb-wc-quotes-advanced')] );
 
     // Quote Email Settings Section
     add_settings_section(
@@ -2476,6 +2514,9 @@ function jfbwqa_settings_init() {
     add_settings_field( 'quote_email_cc', __('Quote Email CC', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_email_cc', 'type' => 'email', 'placeholder' => 'e.g., sales@example.com'] );
     add_settings_field( 'quote_email_default_body', __('Quote Email Default Body', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_wp_editor', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_email_default_body'] );
     add_settings_field( 'display_discount_in_quote', __('Display Discount Row in Quote', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'display_discount_in_quote', 'desc' => __('[Deprecated v1.27] Use the dedicated "Show discount row" checkbox in the new Order Details Table sections below.', 'jfb-wc-quotes-advanced')] );
+    add_settings_field( 'quote_enable_response_box', __('Custom message box', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_enable_response_box', 'desc' => __('Show a custom message box on the order screen for this action. What you type there is added to the email under the heading below (only when not empty).', 'jfb-wc-quotes-advanced')] );
+    add_settings_field( 'quote_response_heading', __('Response heading', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_response_heading', 'type' => 'text', 'desc' => __('Heading shown above the custom message in the email. Default: Response.', 'jfb-wc-quotes-advanced')] );
+    add_settings_field( 'quote_hide_additional_details', __('Hide "Additional Details"', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_hide_additional_details', 'desc' => __('Hide the "Additional Details" section (extra JetEngine meta fields) in this email.', 'jfb-wc-quotes-advanced')] );
 
     /* -------------------------------------------------------------------
      * v1.27: Order Details Table sections - one per email type.
@@ -2925,6 +2966,33 @@ function jfbwqa_render_custom_event_fields( $slug, $event ) {
         </tr>
     </table>
 
+    <h3><?php esc_html_e( 'Custom message & sections', 'jfb-wc-quotes-advanced' ); ?></h3>
+    <table class="form-table" role="presentation">
+        <tr>
+            <th scope="row"><?php esc_html_e( 'Custom message box', 'jfb-wc-quotes-advanced' ); ?></th>
+            <td>
+                <label>
+                    <input type="checkbox" name="<?php echo esc_attr( $base ); ?>[enable_response_box]" value="1" <?php checked( ! empty( $event['enable_response_box'] ) ); ?> />
+                    <?php esc_html_e( 'Show a custom message box on the order screen for this action.', 'jfb-wc-quotes-advanced' ); ?>
+                </label>
+                <p class="description"><?php esc_html_e( 'What you type there is added to the email under the heading below (only when not empty).', 'jfb-wc-quotes-advanced' ); ?></p>
+            </td>
+        </tr>
+        <tr>
+            <th scope="row"><label for="<?php echo esc_attr( $slug ); ?>_response_heading"><?php esc_html_e( 'Response heading', 'jfb-wc-quotes-advanced' ); ?></label></th>
+            <td><input type="text" id="<?php echo esc_attr( $slug ); ?>_response_heading" class="regular-text" name="<?php echo esc_attr( $base ); ?>[response_heading]" value="<?php echo esc_attr( $event['response_heading'] ?? 'Response' ); ?>" placeholder="Response" /></td>
+        </tr>
+        <tr>
+            <th scope="row"><?php esc_html_e( 'Hide "Additional Details"', 'jfb-wc-quotes-advanced' ); ?></th>
+            <td>
+                <label>
+                    <input type="checkbox" name="<?php echo esc_attr( $base ); ?>[hide_additional_details]" value="1" <?php checked( ! empty( $event['hide_additional_details'] ) ); ?> />
+                    <?php esc_html_e( 'Hide the "Additional Details" section (extra JetEngine meta fields) in this email.', 'jfb-wc-quotes-advanced' ); ?>
+                </label>
+            </td>
+        </tr>
+    </table>
+
     <h3><?php esc_html_e( 'Order Details Table (the cart)', 'jfb-wc-quotes-advanced' ); ?></h3>
     <p class="description"><?php esc_html_e( 'Controls what appears in the [Order Details Table] placeholder for this event.', 'jfb-wc-quotes-advanced' ); ?></p>
     <table class="form-table" role="presentation">
@@ -2986,6 +3054,12 @@ function jfbwqa_sanitize_custom_events( $input ) {
         $event['email_cc']       = sanitize_email( $data['email_cc'] ?? '' );
         $event['email_body']     = wp_kses_post( wp_unslash( $data['email_body'] ?? '' ) );
 
+        // v2.6: Response box + Additional Details visibility.
+        $event['enable_response_box']     = ! empty( $data['enable_response_box'] );
+        $heading                          = sanitize_text_field( wp_unslash( $data['response_heading'] ?? '' ) );
+        $event['response_heading']        = ( $heading !== '' ) ? $heading : 'Response';
+        $event['hide_additional_details'] = ! empty( $data['hide_additional_details'] );
+
         $table = [];
         foreach ( $table_keys as $tkey ) {
             $table[ $tkey ] = ! empty( $data['table'][ $tkey ] );
@@ -3017,6 +3091,20 @@ function jfbwqa_sanitize_options( $input ) {
     // v1.30: checkbox toggle for suppressing the WC add-to-cart notice.
     $output['disable_wc_add_to_cart_notice'] = isset( $input['disable_wc_add_to_cart_notice'] ) ? true : false;
     $output['hide_order_custom_fields']      = isset( $input['hide_order_custom_fields'] ) ? true : false;
+
+    // v2.6: per-event Response box + Additional Details toggles (estimate + quote).
+    $output['est_enable_response_box']       = isset( $input['est_enable_response_box'] ) ? true : false;
+    $output['est_response_heading']          = sanitize_text_field( $input['est_response_heading'] ?? 'Response' );
+    $output['est_hide_additional_details']   = isset( $input['est_hide_additional_details'] ) ? true : false;
+    $output['quote_enable_response_box']     = isset( $input['quote_enable_response_box'] ) ? true : false;
+    $output['quote_response_heading']        = sanitize_text_field( $input['quote_response_heading'] ?? 'Response' );
+    $output['quote_hide_additional_details'] = isset( $input['quote_hide_additional_details'] ) ? true : false;
+    if ( $output['est_response_heading'] === '' ) {
+        $output['est_response_heading'] = 'Response';
+    }
+    if ( $output['quote_response_heading'] === '' ) {
+        $output['quote_response_heading'] = 'Response';
+    }
     $output['email_subject']   = sanitize_text_field($input['email_subject'] ?? '');
     $output['email_heading']   = sanitize_text_field($input['email_heading'] ?? '');
     $output['email_reply_to']  = sanitize_email($input['email_reply_to'] ?? '');
@@ -3691,6 +3779,62 @@ function jfbwqa_load_textdomain() {
  */
 const JFBWQA_META_ESTREQ_OVERRIDES = '_jfbwqa_estreq_overrides';
 const JFBWQA_META_QUOTE_OVERRIDES  = '_jfbwqa_quote_overrides';
+// v2.6: per-order custom "Response" messages, keyed by order-action slug.
+const JFBWQA_META_RESPONSES        = '_jfbwqa_responses';
+
+/**
+ * v2.6: unified per-event email options that aren't per-order overrides.
+ * Centralizes the heterogeneous storage (estimate/quote in jfbwqa_options,
+ * custom events in their own array) behind one accessor keyed by slug.
+ *
+ * @return array{enable_response_box:bool,response_heading:string,hide_additional_details:bool}
+ */
+function jfbwqa_get_event_email_options( $slug ) {
+    $defaults = [
+        'enable_response_box'     => false,
+        'response_heading'        => __( 'Response', 'jfb-wc-quotes-advanced' ),
+        'hide_additional_details' => false,
+    ];
+
+    if ( $slug === 'jfbwqa_send_estimate_email' || $slug === 'jfbwqa_send_prepared_quote' ) {
+        $opts   = jfbwqa_get_options();
+        $prefix = ( $slug === 'jfbwqa_send_prepared_quote' ) ? 'quote_' : 'est_';
+        $heading = (string) ( $opts[ $prefix . 'response_heading' ] ?? '' );
+        return [
+            'enable_response_box'     => ! empty( $opts[ $prefix . 'enable_response_box' ] ),
+            'response_heading'        => ( $heading !== '' ) ? $heading : $defaults['response_heading'],
+            'hide_additional_details' => ! empty( $opts[ $prefix . 'hide_additional_details' ] ),
+        ];
+    }
+
+    if ( jfbwqa_is_custom_event_slug( $slug ) ) {
+        $event = jfbwqa_get_custom_event( $slug );
+        if ( $event ) {
+            $heading = (string) ( $event['response_heading'] ?? '' );
+            return [
+                'enable_response_box'     => ! empty( $event['enable_response_box'] ),
+                'response_heading'        => ( $heading !== '' ) ? $heading : $defaults['response_heading'],
+                'hide_additional_details' => ! empty( $event['hide_additional_details'] ),
+            ];
+        }
+    }
+
+    return $defaults;
+}
+
+/**
+ * Read the saved per-order Response message for a given action slug.
+ */
+function jfbwqa_get_order_response( $order, $slug ) {
+    if ( ! $order instanceof WC_Order ) {
+        $order = wc_get_order( (int) $order );
+    }
+    if ( ! $order ) {
+        return '';
+    }
+    $all = $order->get_meta( JFBWQA_META_RESPONSES, true );
+    return ( is_array( $all ) && ! empty( $all[ $slug ] ) ) ? (string) $all[ $slug ] : '';
+}
 
 /**
  * Map of WC order action slug -> ('estimate' | 'quote') email type.
@@ -3794,6 +3938,38 @@ function jfbwqa_register_action_composer_metabox() {
 }
 
 /**
+ * v2.6: render the per-order "Response" message field for an action, but
+ * only when that event has its "custom message box" enabled. Used inside
+ * the composer sections (estimate/quote + custom events).
+ */
+function jfbwqa_render_composer_response_field( $order, $slug ) {
+    $ev = jfbwqa_get_event_email_options( $slug );
+    if ( empty( $ev['enable_response_box'] ) ) {
+        return;
+    }
+    $val = jfbwqa_get_order_response( $order, $slug );
+    ?>
+    <table class="form-table" style="margin-top:0;">
+        <tr>
+            <th scope="row"><label><?php echo esc_html( $ev['response_heading'] ); ?></label></th>
+            <td>
+                <textarea name="jfbwqa_response[<?php echo esc_attr( $slug ); ?>]" rows="4" style="width:100%;"><?php echo esc_textarea( $val ); ?></textarea>
+                <p class="description">
+                    <?php
+                    printf(
+                        /* translators: %s: the response heading text */
+                        esc_html__( 'Added to the email under a "%s" heading. Leave empty to omit it entirely.', 'jfb-wc-quotes-advanced' ),
+                        esc_html( $ev['response_heading'] )
+                    );
+                    ?>
+                </p>
+            </td>
+        </tr>
+    </table>
+    <?php
+}
+
+/**
  * Render the metabox: introductory blurb + one section per email type,
  * each with subject/heading/body/reply-to/cc + optional table override
  * checkboxes. JavaScript reveals exactly one section based on the WC
@@ -3870,6 +4046,7 @@ function jfbwqa_render_action_composer_metabox( $post_or_order ) {
                 <p class="description" style="margin:0 0 12px 0;">
                     <?php esc_html_e( 'Empty fields fall back to the plugin settings defaults. The selected action fires when you click the arrow button on the Order actions dropdown above.', 'jfb-wc-quotes-advanced' ); ?>
                 </p>
+                <?php jfbwqa_render_composer_response_field( $order, $action_slug ); ?>
                 <table class="form-table" style="margin-top:0;">
                     <tr>
                         <th scope="row"><label><?php esc_html_e( 'Subject (override)', 'jfb-wc-quotes-advanced' ); ?></label></th>
@@ -3931,6 +4108,24 @@ function jfbwqa_render_action_composer_metabox( $post_or_order ) {
                 </table>
             </div>
         <?php endforeach; ?>
+
+        <?php
+        // v2.6: custom events get a Response-only section (no per-order
+        // subject/body overrides exist for them). Rendered only when the
+        // event has its custom message box enabled.
+        foreach ( jfbwqa_get_custom_events() as $cslug => $cevent ) :
+            $cev = jfbwqa_get_event_email_options( $cslug );
+            if ( empty( $cev['enable_response_box'] ) ) {
+                continue;
+            }
+            ?>
+            <div class="jfbwqa-action-section" data-jfbwqa-action="<?php echo esc_attr( $cslug ); ?>" style="display:none; margin-top:8px;">
+                <h3 style="margin:0 0 8px 0; font-size:14px; padding:8px 12px; background:#f0f6fc; border:1px solid #c5d9ed;">
+                    <?php echo esc_html( $cevent['label'] ); ?>
+                </h3>
+                <?php jfbwqa_render_composer_response_field( $order, $cslug ); ?>
+            </div>
+        <?php endforeach; ?>
     </div>
     <?php
 }
@@ -3982,6 +4177,23 @@ function jfbwqa_save_action_composer_metabox( $order_id, $order = null ) {
 
         $wc_order->update_meta_data( $meta_key, $clean );
     }
+
+    // v2.6: per-order Response messages, keyed by action slug. Only events
+    // with their custom message box enabled render a field, so absent slugs
+    // simply aren't included.
+    $responses = ( isset( $_POST['jfbwqa_response'] ) && is_array( $_POST['jfbwqa_response'] ) )
+        ? wp_unslash( $_POST['jfbwqa_response'] )
+        : [];
+    $clean_responses = [];
+    foreach ( $responses as $slug => $text ) {
+        $slug = sanitize_key( $slug );
+        $text = wp_kses_post( (string) $text );
+        if ( trim( wp_strip_all_tags( $text ) ) !== '' ) {
+            $clean_responses[ $slug ] = $text;
+        }
+    }
+    $wc_order->update_meta_data( JFBWQA_META_RESPONSES, $clean_responses );
+
     $wc_order->save();
 }
 
