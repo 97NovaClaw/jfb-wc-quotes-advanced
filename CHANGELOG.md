@@ -4,6 +4,20 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [2.5.1] - 2026-02-28
+
+### Fixed
+- **Field mappings wouldn't save.** The JetForm upload + mapping-save logic
+  lived inside the settings-page render function, guarded by
+  `$_POST['option_page']`. But the form posts to `options.php`, which saves
+  options and redirects back as a GET — so that block never ran and new
+  mappings were silently dropped. Upload + mapping save now run in a
+  dedicated `admin_init` handler (`jfbwqa_handle_settings_form_post()`) on
+  the same request as the save, nonce-checked. The old inline block is left
+  as a dormant no-op and documented.
+
+---
+
 ## [2.5.0] - 2026-02-28
 
 ### Added

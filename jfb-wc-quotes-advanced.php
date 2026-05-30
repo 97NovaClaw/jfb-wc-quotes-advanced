@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI. HPOS-compatible; creates orders in-process via wc_create_order() (no REST credentials required).
- * Version:     2.5.0
+ * Version:     2.5.1
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '2.5.0' );
+define( 'JFBWQA_VERSION', '2.5.1' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_REGISTRY_OPTION', 'jfbwqa_event_registry' ); // Order-event registry (label, visible, order, source)
 define( 'JFBWQA_CUSTOM_EVENTS_OPTION', 'jfbwqa_custom_events' ); // User-created editable email events
@@ -3233,6 +3233,70 @@ function jfbwqa_ajax_registry_delete_event() {
     wp_send_json_success( [ 'slug' => $slug ] );
 }
 
+/**
+ * v2.5.1: process the JetForm JSON upload + field-mapping save during the
+ * real form submit.
+ *
+ * The settings form posts to options.php (so WordPress can save the
+ * registered options). options.php fires admin_init, then saves options,
+ * then redirects back here as a GET - meaning jfbwqa_render_settings_page()
+ * never sees the POST and its inline upload/mapping handler never ran. That
+ * is why saved mappings appeared to "not stick". Handling it here on
+ * admin_init runs on the same request as the save, with $_POST/$_FILES
+ * available. The field mapping persists to field-mapping.json (separate from
+ * the option array), so it is intentionally not part of jfbwqa_options.
+ */
+add_action( 'admin_init', 'jfbwqa_handle_settings_form_post' );
+function jfbwqa_handle_settings_form_post() {
+    if ( empty( $_POST['option_page'] ) || $_POST['option_page'] !== 'jfbwqa_settings_group' ) {
+        return;
+    }
+    if ( ! current_user_can( 'manage_options' ) ) {
+        return;
+    }
+    // settings_fields() emits this nonce (action "{group}-options").
+    if ( ! isset( $_POST['_wpnonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['_wpnonce'] ) ), 'jfbwqa_settings_group-options' ) ) {
+        return;
+    }
+
+    // 1) JetForm JSON upload.
+    if ( isset( $_FILES['jfbwqa_jetform_json'] ) && ! empty( $_FILES['jfbwqa_jetform_json']['name'] )
+        && isset( $_FILES['jfbwqa_jetform_json']['error'] ) && $_FILES['jfbwqa_jetform_json']['error'] === UPLOAD_ERR_OK ) {
+        $name    = sanitize_file_name( $_FILES['jfbwqa_jetform_json']['name'] );
+        $type    = isset( $_FILES['jfbwqa_jetform_json']['type'] ) ? $_FILES['jfbwqa_jetform_json']['type'] : '';
+        $is_json = ( $type === 'application/json' ) || ( strtolower( pathinfo( $name, PATHINFO_EXTENSION ) ) === 'json' );
+        if ( $is_json ) {
+            $destination = jfbwqa_jetform_path();
+            if ( move_uploaded_file( $_FILES['jfbwqa_jetform_json']['tmp_name'], $destination ) ) {
+                add_settings_error( 'jfbwqa_mapping', 'jfbwqa_upload_ok', __( 'JetForm JSON uploaded. Click "Populate Mapping Table" below.', 'jfb-wc-quotes-advanced' ), 'updated' );
+                jfbwqa_write_log( 'Uploaded jetform-latest.json successfully (admin_init handler).' );
+            } else {
+                add_settings_error( 'jfbwqa_mapping', 'jfbwqa_upload_fail', __( 'Could not save uploaded JSON file. Check plugin directory permissions.', 'jfb-wc-quotes-advanced' ) );
+            }
+        } else {
+            add_settings_error( 'jfbwqa_mapping', 'jfbwqa_upload_type', __( 'Uploaded file must be a JSON file.', 'jfb-wc-quotes-advanced' ) );
+        }
+    }
+
+    // 2) Field mapping save (posted nested under jfbwqa_options[jfbwqa_mapping]).
+    if ( isset( $_POST[ JFBWQA_OPTION_NAME ]['jfbwqa_mapping'] ) && is_array( $_POST[ JFBWQA_OPTION_NAME ]['jfbwqa_mapping'] ) ) {
+        $raw         = wp_unslash( $_POST[ JFBWQA_OPTION_NAME ]['jfbwqa_mapping'] );
+        $new_mapping = [];
+        foreach ( $raw as $fieldId => $wcTargets ) {
+            $sid = sanitize_text_field( $fieldId );
+            if ( $sid === '' || ! is_array( $wcTargets ) ) {
+                continue;
+            }
+            $targets = array_values( array_filter( array_map( 'sanitize_text_field', array_slice( $wcTargets, 0, 3 ) ) ) );
+            if ( ! empty( $targets ) ) {
+                $new_mapping[ $sid ] = $targets;
+            }
+        }
+        jfbwqa_write_log( 'Saving field mapping (admin_init handler): ' . count( $new_mapping ) . ' field(s).' );
+        jfbwqa_write_mapping( $new_mapping );
+    }
+}
+
 // --- Render the Main Settings Page ---
 function jfbwqa_render_settings_page() {
     if ( ! current_user_can( 'manage_options' ) ) return;
@@ -3241,7 +3305,11 @@ function jfbwqa_render_settings_page() {
     $mapping_message = ''; // Message specific to mapping actions
     $file_upload_message = '';
 
-    // Check if the main form was submitted (saving general settings AND potentially mapping)
+    // NOTE (v2.5.1): the real upload + mapping save now happens in
+    // jfbwqa_handle_settings_form_post() on admin_init, because this form
+    // posts to options.php and this render function only runs on the GET
+    // redirect (no POST). The block below is a dormant no-op for the legacy
+    // self-post path and won't run during the normal options.php save flow.
     if ( isset( $_POST['option_page'] ) && $_POST['option_page'] == 'jfbwqa_settings_group' ) {
         // Nonce verified by WP `options.php` before calling sanitize callback
 
