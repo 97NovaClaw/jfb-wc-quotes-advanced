@@ -4,6 +4,19 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [2.7.0] - 2026-07-12
+
+### Added
+- **Estimate requests now show in the WooCommerce sidebar badge.** The
+  admin menu's "+N" bubble natively counts only Processing orders
+  (`wc_processing_order_count()`), so form-created orders sitting in the
+  custom Estimate Request status never surfaced there. A new
+  `woocommerce_menu_order_count` filter adds them. Toggle lives in
+  Advanced → Order Screen ("Count estimate requests in the orders badge"),
+  default ON.
+
+---
+
 ## [2.6.0] - 2026-02-28
 
 ### Added

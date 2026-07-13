@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI. HPOS-compatible; creates orders in-process via wc_create_order() (no REST credentials required).
- * Version:     2.6.0
+ * Version:     2.7.0
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '2.6.0' );
+define( 'JFBWQA_VERSION', '2.7.0' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_REGISTRY_OPTION', 'jfbwqa_event_registry' ); // Order-event registry (label, visible, order, source)
 define( 'JFBWQA_CUSTOM_EVENTS_OPTION', 'jfbwqa_custom_events' ); // User-created editable email events
@@ -143,6 +143,9 @@ function jfbwqa_get_options() {
         // v2.4+: when true, hide WordPress's "Custom Fields" metabox on the
         // order edit screen (legacy + HPOS). Does not delete any meta.
         'hide_order_custom_fields' => false,
+        // v2.7: include estimate-request orders in the WooCommerce sidebar
+        // "+N" badge (which natively counts only "processing" orders).
+        'count_estimates_in_menu_badge' => true,
         'email_subject'      => 'Your Estimate Request #{order_number}',
         'email_heading'      => 'Estimate Request Details',
         'email_reply_to'     => get_option('admin_email'),
@@ -536,6 +539,27 @@ function jfbwqa_make_quote_sent_editable( $is_editable, $order ) {
         $is_editable = true;
     }
     return $is_editable;
+}
+
+/**
+ * v2.7: include estimate requests in the WooCommerce sidebar badge.
+ *
+ * WooCommerce's "+N" bubble on the WooCommerce admin menu is hardcoded to
+ * count orders in "processing" status (wc_processing_order_count()), so
+ * form-created orders sitting in our custom "estimate-request" status never
+ * increment it. This filter adds them so net-new requests surface in the
+ * badge like normal orders would. Opt-out via the Order Screen settings.
+ */
+add_filter( 'woocommerce_menu_order_count', 'jfbwqa_add_estimates_to_menu_badge' );
+function jfbwqa_add_estimates_to_menu_badge( $count ) {
+    $opts = jfbwqa_get_options();
+    if ( empty( $opts['count_estimates_in_menu_badge'] ) ) {
+        return $count;
+    }
+    if ( function_exists( 'wc_orders_count' ) ) {
+        $count = (int) $count + (int) wc_orders_count( 'estimate-request' );
+    }
+    return $count;
 }
 
 /* =============================================================================
@@ -2594,6 +2618,17 @@ function jfbwqa_settings_init() {
             'desc' => __( 'Hide the WordPress "Custom Fields" metabox on the order edit screen (legacy and HPOS). This only hides the UI; no order meta is deleted.', 'jfb-wc-quotes-advanced' ),
         ]
     );
+    add_settings_field(
+        'count_estimates_in_menu_badge',
+        __( 'Count estimate requests in the orders badge', 'jfb-wc-quotes-advanced' ),
+        'jfbwqa_render_field_checkbox',
+        JFBWQA_SETTINGS_SLUG,
+        'jfbwqa_section_order_screen',
+        [
+            'key'  => 'count_estimates_in_menu_badge',
+            'desc' => __( 'Include orders in the Estimate Request status in the WooCommerce sidebar "+N" notification bubble. WooCommerce natively counts only Processing orders, so new form submissions are invisible there without this.', 'jfb-wc-quotes-advanced' ),
+        ]
+    );
 
     // Email Deliverability Section
     add_settings_section(
@@ -3091,6 +3126,7 @@ function jfbwqa_sanitize_options( $input ) {
     // v1.30: checkbox toggle for suppressing the WC add-to-cart notice.
     $output['disable_wc_add_to_cart_notice'] = isset( $input['disable_wc_add_to_cart_notice'] ) ? true : false;
     $output['hide_order_custom_fields']      = isset( $input['hide_order_custom_fields'] ) ? true : false;
+    $output['count_estimates_in_menu_badge'] = isset( $input['count_estimates_in_menu_badge'] ) ? true : false;
 
     // v2.6: per-event Response box + Additional Details toggles (estimate + quote).
     $output['est_enable_response_box']       = isset( $input['est_enable_response_box'] ) ? true : false;
