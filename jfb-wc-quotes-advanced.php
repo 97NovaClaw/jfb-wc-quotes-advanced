@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI. HPOS-compatible; creates orders in-process via wc_create_order() (no REST credentials required).
- * Version:     2.7.0
+ * Version:     2.8.0
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '2.7.0' );
+define( 'JFBWQA_VERSION', '2.8.0' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_REGISTRY_OPTION', 'jfbwqa_event_registry' ); // Order-event registry (label, visible, order, source)
 define( 'JFBWQA_CUSTOM_EVENTS_OPTION', 'jfbwqa_custom_events' ); // User-created editable email events
@@ -155,6 +155,10 @@ function jfbwqa_get_options() {
         'est_enable_response_box'     => false,
         'est_response_heading'        => 'Response',
         'est_hide_additional_details' => false,
+        // v2.8: after-effects (estimate).
+        'est_after_status'            => '',
+        'est_after_payment_complete'  => false,
+        'est_suppress_wc_emails'      => false,
         // Defaults for the new Quote Email
         'quote_email_subject'      => 'Your Quote #{order_number} is Ready',
         'quote_email_heading'      => 'Your Prepared Quote',
@@ -165,6 +169,10 @@ function jfbwqa_get_options() {
         'quote_enable_response_box'     => false,
         'quote_response_heading'        => 'Response',
         'quote_hide_additional_details' => false,
+        // v2.8: after-effects (quote).
+        'quote_after_status'            => '',
+        'quote_after_payment_complete'  => false,
+        'quote_suppress_wc_emails'      => false,
         'display_discount_in_quote' => false, // [DEPRECATED v1.27] superseded by quote_table_show_discount, kept for back-compat reads.
 
         // v1.27: Estimate Request email - Order Details Table defaults.
@@ -1314,6 +1322,10 @@ function jfbwqa_default_custom_event( $label = '' ) {
         'enable_response_box'     => false,
         'response_heading'        => 'Response',
         'hide_additional_details' => false,
+        // v2.8: after-effects.
+        'after_status'            => '',
+        'after_payment_complete'  => false,
+        'suppress_wc_emails'      => false,
         'table'          => [
             'show_image'       => true,
             'show_unit_price'  => true,
@@ -1515,6 +1527,9 @@ function jfbwqa_send_custom_event_email( WC_Order $order, array $event, $slug = 
     if ( $sent ) {
         $order->add_order_note( sprintf( __( '"%s" email sent to customer.', 'jfb-wc-quotes-advanced' ), $label ), false, false );
         jfbwqa_write_log( "Custom event '{$label}' email SENT successfully for order #{$order_id}." );
+        if ( $slug !== '' ) {
+            jfbwqa_apply_event_after_effects( $order, $slug );
+        }
         return true;
     }
 
@@ -1900,9 +1915,12 @@ function jfbwqa_handle_send_prepared_quote_action( $order ) {
         // we also flip the order status to 'quote-sent' so the order's
         // pipeline progresses. The old AJAX handler used to do this
         // separately - now it lives here for both code paths.
+        // v2.8: configured after-effects run afterwards and can transition
+        // the order further (e.g. an admin-chosen status wins over quote-sent).
         if ( $order->get_status() !== 'quote-sent' ) {
             $order->update_status( 'quote-sent', __( 'Quote email sent to customer.', 'jfb-wc-quotes-advanced' ) );
         }
+        jfbwqa_apply_event_after_effects( $order, 'jfbwqa_send_prepared_quote' );
     } else {
         $error_msg = sprintf( __( 'Failed sending Prepared Quote email for Order #%s via wp_mail().', 'jfb-wc-quotes-advanced' ), $order->get_order_number() );
         $order->add_order_note( $error_msg, false, false );
@@ -2069,6 +2087,7 @@ function jfbwqa_handle_order_action( $order ) {
         }
         $order->add_order_note( $note, false, false );
         jfbwqa_write_log("Email SENT successfully for order #{$order_id}.");
+        jfbwqa_apply_event_after_effects( $order, 'jfbwqa_send_estimate_email' );
         add_action('admin_notices', function() use ($order) { printf('<div class="notice notice-success is-dismissible"><p>%s</p></div>', sprintf(esc_html__('Estimate Request email sent successfully for Order #%s.', 'jfb-wc-quotes-advanced'), esc_html($order->get_order_number()))); });
     } else { /* ... failure note & log ... */
         $error_msg = sprintf(__('Failed sending estimate email Order #%s via wp_mail().', 'jfb-wc-quotes-advanced'), $order->get_order_number());
@@ -2302,6 +2321,43 @@ function jfbwqa_render_synthetic_row_html( $name, $qty, $line_total, $config, $t
     return $row;
 }
 
+/**
+ * v2.8: render the order's downloadable files as a simple email-safe list
+ * for the [Download Links] placeholder. Empty string when there is nothing
+ * to download (e.g. permissions not granted yet because the order is unpaid).
+ */
+function jfbwqa_render_download_links_html( $order ) {
+    if ( ! $order instanceof WC_Order ) {
+        return '';
+    }
+    $items = $order->get_downloadable_items();
+    if ( empty( $items ) ) {
+        jfbwqa_write_log( 'DEBUG: [Download Links] used but order #' . $order->get_id() . ' has no downloadable items (unpaid or no downloadable products).' );
+        return '';
+    }
+
+    $html = '<table cellspacing="0" cellpadding="0" style="width:100%; font-family: \'Helvetica Neue\', Helvetica, Roboto, Arial, sans-serif; margin: 16px 0; border-collapse: collapse;" border="0"><tbody>';
+    foreach ( $items as $item ) {
+        $product_name  = (string) ( $item['product_name'] ?? '' );
+        $download_name = (string) ( $item['download_name'] ?? __( 'Download', 'jfb-wc-quotes-advanced' ) );
+        $download_url  = (string) ( $item['download_url'] ?? '' );
+        if ( $download_url === '' ) {
+            continue;
+        }
+        $label = ( $product_name !== '' && $product_name !== $download_name )
+            ? $product_name . ' — ' . $download_name
+            : ( $product_name !== '' ? $product_name : $download_name );
+        $html .= '<tr>'
+            . '<td style="padding:8px 12px; border:1px solid #eee;">' . esc_html( $label ) . '</td>'
+            . '<td style="padding:8px 12px; border:1px solid #eee; text-align:right;">'
+            . '<a href="' . esc_url( $download_url ) . '" style="color:#2271b1; font-weight:bold; text-decoration:underline;">' . esc_html__( 'Download', 'jfb-wc-quotes-advanced' ) . '</a>'
+            . '</td>'
+            . '</tr>';
+    }
+    $html .= '</tbody></table>';
+    return $html;
+}
+
 /* =============================================================================
    8) Placeholder Replacement Function (Reads options, uses mapping JSON)
    -----------------------------------------------------------------------------
@@ -2366,6 +2422,25 @@ function jfbwqa_replace_email_placeholders( $content, $order, $config_or_show_pr
         jfbwqa_write_log( "DEBUG: Replaced '{$order_details_table_placeholder}' with rendered table (" . strlen( $full_table_html ) . ' chars) for order #' . $order_id_for_log );
     } else {
         jfbwqa_write_log( "DEBUG: jfbwqa_replace_email_placeholders() - Did NOT find '{$order_details_table_placeholder}' in content for order #{$order_id_for_log}." );
+    }
+
+    // v2.8: Payment placeholders. [Payment URL] is the raw customer payment
+    // page URL (for custom markup); [Payment Link] renders a styled button.
+    if ( strpos( $content, '[Payment URL]' ) !== false ) {
+        $content = str_replace( '[Payment URL]', esc_url( $order->get_checkout_payment_url() ), $content );
+    }
+    if ( strpos( $content, '[Payment Link]' ) !== false ) {
+        $pay_button = '<p style="margin:16px 0;"><a href="' . esc_url( $order->get_checkout_payment_url() ) . '" style="display:inline-block; padding:12px 24px; background:#2271b1; color:#ffffff; text-decoration:none; border-radius:4px; font-weight:bold;">'
+            . esc_html__( 'Pay for this order', 'jfb-wc-quotes-advanced' )
+            . '</a></p>';
+        $content = str_replace( '[Payment Link]', $pay_button, $content );
+    }
+
+    // v2.8: [Download Links] - the order's downloadable files. Renders
+    // nothing when the order has no downloads (permissions are typically
+    // granted by WooCommerce once the order is paid/processing/completed).
+    if ( strpos( $content, '[Download Links]' ) !== false ) {
+        $content = str_replace( '[Download Links]', jfbwqa_render_download_links_html( $order ), $content );
     }
 
     // Advanced Placeholders: {[field_name]}
@@ -2524,6 +2599,9 @@ function jfbwqa_settings_init() {
     add_settings_field( 'est_enable_response_box', __('Custom message box', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_enable_response_box', 'desc' => __('Show a custom message box on the order screen for this action. What you type there is added to the email under the heading below (only when not empty).', 'jfb-wc-quotes-advanced')] );
     add_settings_field( 'est_response_heading', __('Response heading', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_response_heading', 'type' => 'text', 'desc' => __('Heading shown above the custom message in the email. Default: Response.', 'jfb-wc-quotes-advanced')] );
     add_settings_field( 'est_hide_additional_details', __('Hide "Additional Details"', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_hide_additional_details', 'desc' => __('Hide the "Additional Details" section (extra JetEngine meta fields) in this email.', 'jfb-wc-quotes-advanced')] );
+    add_settings_field( 'est_after_status', __('After send: set order status', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_status_select', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_after_status', 'desc' => __('Move the order to this status after the email is sent successfully.', 'jfb-wc-quotes-advanced')] );
+    add_settings_field( 'est_after_payment_complete', __('After send: mark payment complete', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_after_payment_complete', 'desc' => __('Runs WooCommerce\'s payment_complete(): marks the order paid, reduces stock, grants download permissions, and sets the status to processing/completed. Use for offline/manual payment confirmation.', 'jfb-wc-quotes-advanced')] );
+    add_settings_field( 'est_suppress_wc_emails', __('Suppress WooCommerce status emails', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_suppress_wc_emails', 'desc' => __('While this event changes order status, block WooCommerce\'s own customer emails (Processing, Completed, On-hold, Refunded) so they don\'t double up with this one. Admin "New order" notifications are unaffected.', 'jfb-wc-quotes-advanced')] );
 
     // Quote Email Settings Section
     add_settings_section(
@@ -2541,6 +2619,9 @@ function jfbwqa_settings_init() {
     add_settings_field( 'quote_enable_response_box', __('Custom message box', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_enable_response_box', 'desc' => __('Show a custom message box on the order screen for this action. What you type there is added to the email under the heading below (only when not empty).', 'jfb-wc-quotes-advanced')] );
     add_settings_field( 'quote_response_heading', __('Response heading', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_response_heading', 'type' => 'text', 'desc' => __('Heading shown above the custom message in the email. Default: Response.', 'jfb-wc-quotes-advanced')] );
     add_settings_field( 'quote_hide_additional_details', __('Hide "Additional Details"', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_hide_additional_details', 'desc' => __('Hide the "Additional Details" section (extra JetEngine meta fields) in this email.', 'jfb-wc-quotes-advanced')] );
+    add_settings_field( 'quote_after_status', __('After send: set order status', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_status_select', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_after_status', 'desc' => __('Move the order to this status after the email is sent successfully. Note: the quote email always sets "Quote Sent" first; a status chosen here is applied after and wins.', 'jfb-wc-quotes-advanced')] );
+    add_settings_field( 'quote_after_payment_complete', __('After send: mark payment complete', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_after_payment_complete', 'desc' => __('Runs WooCommerce\'s payment_complete(): marks the order paid, reduces stock, grants download permissions, and sets the status to processing/completed. Use for offline/manual payment confirmation.', 'jfb-wc-quotes-advanced')] );
+    add_settings_field( 'quote_suppress_wc_emails', __('Suppress WooCommerce status emails', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_suppress_wc_emails', 'desc' => __('While this event changes order status, block WooCommerce\'s own customer emails (Processing, Completed, On-hold, Refunded) so they don\'t double up with this one. Admin "New order" notifications are unaffected.', 'jfb-wc-quotes-advanced')] );
 
     /* -------------------------------------------------------------------
      * v1.27: Order Details Table sections - one per email type.
@@ -2948,6 +3029,25 @@ function jfbwqa_render_field_checkbox( $args ) {
     printf('<input type="checkbox" id="%s" name="%s[%s]" value="1" %s />', esc_attr($key), esc_attr(JFBWQA_OPTION_NAME), esc_attr($key), $checked);
     if (isset($args['desc'])) printf(' <label for="%s"><span class="description">%s</span></label>', esc_attr($key), wp_kses_post($args['desc']));
 }
+/**
+ * v2.8: order-status dropdown for after-effects settings. Empty value
+ * means "no status change".
+ */
+function jfbwqa_render_field_status_select( $args ) {
+    $options  = jfbwqa_get_options();
+    $key      = $args['key'];
+    $current  = (string) ( $options[ $key ] ?? '' );
+    $statuses = function_exists( 'wc_get_order_statuses' ) ? wc_get_order_statuses() : [];
+    printf( '<select id="%s" name="%s[%s]">', esc_attr( $key ), esc_attr( JFBWQA_OPTION_NAME ), esc_attr( $key ) );
+    echo '<option value="">' . esc_html__( '— No status change —', 'jfb-wc-quotes-advanced' ) . '</option>';
+    foreach ( $statuses as $status_key => $status_label ) {
+        printf( '<option value="%s" %s>%s</option>', esc_attr( $status_key ), selected( $current, $status_key, false ), esc_html( $status_label ) );
+    }
+    echo '</select>';
+    if ( isset( $args['desc'] ) ) {
+        printf( '<p class="description">%s</p>', wp_kses_post( $args['desc'] ) );
+    }
+}
 function jfbwqa_render_field_wp_editor( $args ) {
     $options = jfbwqa_get_options(); $key = $args['key']; $value = $options[$key] ?? '';
     wp_editor($value, esc_attr($key), ['textarea_name' => sprintf('%s[%s]', JFBWQA_OPTION_NAME, $key), 'textarea_rows' => 10, 'media_buttons' => false, 'teeny' => true, 'quicktags' => true]);
@@ -2996,7 +3096,7 @@ function jfbwqa_render_custom_event_fields( $slug, $event ) {
             <th scope="row"><label for="<?php echo esc_attr( $slug ); ?>_body"><?php esc_html_e( 'Email Body', 'jfb-wc-quotes-advanced' ); ?></label></th>
             <td>
                 <textarea id="<?php echo esc_attr( $slug ); ?>_body" name="<?php echo esc_attr( $base ); ?>[email_body]" rows="8" class="large-text code"><?php echo esc_textarea( $event['email_body'] ); ?></textarea>
-                <p class="description"><?php esc_html_e( 'Supports {order_number}, {customer_first_name}, {customer_name}, {site_title}, {[your_mapped_field]}, and [Order Details Table] (the order cart).', 'jfb-wc-quotes-advanced' ); ?></p>
+                <p class="description"><?php esc_html_e( 'Supports {order_number}, {customer_first_name}, {customer_name}, {site_title}, {[your_mapped_field]}, [Order Details Table] (the order cart), [Payment Link] (styled pay button), [Payment URL] (raw payment page URL), and [Download Links] (the order\'s downloadable files).', 'jfb-wc-quotes-advanced' ); ?></p>
             </td>
         </tr>
     </table>
@@ -3023,6 +3123,40 @@ function jfbwqa_render_custom_event_fields( $slug, $event ) {
                 <label>
                     <input type="checkbox" name="<?php echo esc_attr( $base ); ?>[hide_additional_details]" value="1" <?php checked( ! empty( $event['hide_additional_details'] ) ); ?> />
                     <?php esc_html_e( 'Hide the "Additional Details" section (extra JetEngine meta fields) in this email.', 'jfb-wc-quotes-advanced' ); ?>
+                </label>
+            </td>
+        </tr>
+    </table>
+
+    <h3><?php esc_html_e( 'After this event runs', 'jfb-wc-quotes-advanced' ); ?></h3>
+    <p class="description"><?php esc_html_e( 'Order state changes applied after the email sends successfully.', 'jfb-wc-quotes-advanced' ); ?></p>
+    <table class="form-table" role="presentation">
+        <tr>
+            <th scope="row"><label for="<?php echo esc_attr( $slug ); ?>_after_status"><?php esc_html_e( 'Set order status', 'jfb-wc-quotes-advanced' ); ?></label></th>
+            <td>
+                <select id="<?php echo esc_attr( $slug ); ?>_after_status" name="<?php echo esc_attr( $base ); ?>[after_status]">
+                    <option value=""><?php esc_html_e( '— No status change —', 'jfb-wc-quotes-advanced' ); ?></option>
+                    <?php foreach ( ( function_exists( 'wc_get_order_statuses' ) ? wc_get_order_statuses() : [] ) as $status_key => $status_label ) : ?>
+                        <option value="<?php echo esc_attr( $status_key ); ?>" <?php selected( $event['after_status'] ?? '', $status_key ); ?>><?php echo esc_html( $status_label ); ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </td>
+        </tr>
+        <tr>
+            <th scope="row"><?php esc_html_e( 'Mark payment complete', 'jfb-wc-quotes-advanced' ); ?></th>
+            <td>
+                <label>
+                    <input type="checkbox" name="<?php echo esc_attr( $base ); ?>[after_payment_complete]" value="1" <?php checked( ! empty( $event['after_payment_complete'] ) ); ?> />
+                    <?php esc_html_e( 'Run WooCommerce\'s payment_complete(): marks the order paid, reduces stock, grants download permissions, and sets the status to processing/completed.', 'jfb-wc-quotes-advanced' ); ?>
+                </label>
+            </td>
+        </tr>
+        <tr>
+            <th scope="row"><?php esc_html_e( 'Suppress WooCommerce status emails', 'jfb-wc-quotes-advanced' ); ?></th>
+            <td>
+                <label>
+                    <input type="checkbox" name="<?php echo esc_attr( $base ); ?>[suppress_wc_emails]" value="1" <?php checked( ! empty( $event['suppress_wc_emails'] ) ); ?> />
+                    <?php esc_html_e( 'Block WooCommerce\'s own customer emails (Processing, Completed, On-hold, Refunded) while this event changes order status. Admin "New order" notifications are unaffected.', 'jfb-wc-quotes-advanced' ); ?>
                 </label>
             </td>
         </tr>
@@ -3095,6 +3229,11 @@ function jfbwqa_sanitize_custom_events( $input ) {
         $event['response_heading']        = ( $heading !== '' ) ? $heading : 'Response';
         $event['hide_additional_details'] = ! empty( $data['hide_additional_details'] );
 
+        // v2.8: after-effects.
+        $event['after_status']           = sanitize_text_field( wp_unslash( $data['after_status'] ?? '' ) );
+        $event['after_payment_complete'] = ! empty( $data['after_payment_complete'] );
+        $event['suppress_wc_emails']     = ! empty( $data['suppress_wc_emails'] );
+
         $table = [];
         foreach ( $table_keys as $tkey ) {
             $table[ $tkey ] = ! empty( $data['table'][ $tkey ] );
@@ -3141,6 +3280,14 @@ function jfbwqa_sanitize_options( $input ) {
     if ( $output['quote_response_heading'] === '' ) {
         $output['quote_response_heading'] = 'Response';
     }
+
+    // v2.8: after-effects (estimate + quote).
+    $output['est_after_status']           = sanitize_text_field( $input['est_after_status'] ?? '' );
+    $output['est_after_payment_complete'] = isset( $input['est_after_payment_complete'] ) ? true : false;
+    $output['est_suppress_wc_emails']     = isset( $input['est_suppress_wc_emails'] ) ? true : false;
+    $output['quote_after_status']           = sanitize_text_field( $input['quote_after_status'] ?? '' );
+    $output['quote_after_payment_complete'] = isset( $input['quote_after_payment_complete'] ) ? true : false;
+    $output['quote_suppress_wc_emails']     = isset( $input['quote_suppress_wc_emails'] ) ? true : false;
     $output['email_subject']   = sanitize_text_field($input['email_subject'] ?? '');
     $output['email_heading']   = sanitize_text_field($input['email_heading'] ?? '');
     $output['email_reply_to']  = sanitize_email($input['email_reply_to'] ?? '');
@@ -3873,6 +4020,124 @@ function jfbwqa_get_order_response( $order, $slug ) {
 }
 
 /**
+ * v2.8: per-event after-effects (order state changes applied after a
+ * successful send). Same storage split as the email options: estimate and
+ * quote live in jfbwqa_options under est_/quote_ prefixes; custom events
+ * carry their own keys.
+ *
+ * @return array{status:string,payment_complete:bool,suppress_wc_emails:bool}
+ */
+function jfbwqa_get_event_after_effects( $slug ) {
+    $defaults = [
+        'status'             => '',
+        'payment_complete'   => false,
+        'suppress_wc_emails' => false,
+    ];
+
+    if ( $slug === 'jfbwqa_send_estimate_email' || $slug === 'jfbwqa_send_prepared_quote' ) {
+        $opts   = jfbwqa_get_options();
+        $prefix = ( $slug === 'jfbwqa_send_prepared_quote' ) ? 'quote_' : 'est_';
+        return [
+            'status'             => sanitize_text_field( (string) ( $opts[ $prefix . 'after_status' ] ?? '' ) ),
+            'payment_complete'   => ! empty( $opts[ $prefix . 'after_payment_complete' ] ),
+            'suppress_wc_emails' => ! empty( $opts[ $prefix . 'suppress_wc_emails' ] ),
+        ];
+    }
+
+    if ( jfbwqa_is_custom_event_slug( $slug ) ) {
+        $event = jfbwqa_get_custom_event( $slug );
+        if ( $event ) {
+            return [
+                'status'             => sanitize_text_field( (string) ( $event['after_status'] ?? '' ) ),
+                'payment_complete'   => ! empty( $event['after_payment_complete'] ),
+                'suppress_wc_emails' => ! empty( $event['suppress_wc_emails'] ),
+            ];
+        }
+    }
+
+    return $defaults;
+}
+
+/**
+ * Toggle suppression of WooCommerce's customer-facing status-transition
+ * emails. Used while an event's after-effects change order state so WC's
+ * native Processing/Completed/etc. emails don't double up with ours.
+ * Admin "New order" notifications are deliberately left alone.
+ */
+function jfbwqa_set_wc_status_email_suppression( $suppress ) {
+    $ids = [
+        'customer_processing_order',
+        'customer_completed_order',
+        'customer_on_hold_order',
+        'customer_refunded_order',
+    ];
+    foreach ( $ids as $id ) {
+        if ( $suppress ) {
+            add_filter( 'woocommerce_email_enabled_' . $id, '__return_false', 999 );
+        } else {
+            remove_filter( 'woocommerce_email_enabled_' . $id, '__return_false', 999 );
+        }
+    }
+}
+
+/**
+ * Apply an event's after-effects to the order. Called by the senders only
+ * after a successful send.
+ *
+ * Order of operations: payment_complete() first (it cascades: marks paid,
+ * reduces stock - guarded by WC against double-reduction - grants download
+ * permissions, and sets status to processing/completed), then the explicit
+ * status override, so an admin-chosen status always wins.
+ *
+ * Loop safety: a status change here can fire other events via the
+ * status_changed trigger (intended - that's how chained flows work), but
+ * jfbwqa_dispatch_event_email()'s per-request guard ensures no event runs
+ * twice for the same order in one request.
+ */
+function jfbwqa_apply_event_after_effects( $order, $slug ) {
+    if ( ! $order instanceof WC_Order ) {
+        $order = wc_get_order( (int) $order );
+    }
+    if ( ! $order ) {
+        return;
+    }
+
+    $fx = jfbwqa_get_event_after_effects( $slug );
+    if ( empty( $fx['payment_complete'] ) && $fx['status'] === '' ) {
+        return;
+    }
+
+    $registry    = jfbwqa_get_merged_event_registry( false );
+    $event_label = $registry[ $slug ]['label'] ?? $slug;
+
+    if ( ! empty( $fx['suppress_wc_emails'] ) ) {
+        jfbwqa_set_wc_status_email_suppression( true );
+    }
+
+    try {
+        if ( ! empty( $fx['payment_complete'] ) && ! $order->is_paid() ) {
+            jfbwqa_write_log( "After-effects ({$slug}): calling payment_complete() for order #" . $order->get_id() );
+            $order->payment_complete();
+        }
+
+        if ( $fx['status'] !== '' ) {
+            $target = preg_replace( '/^wc-/', '', $fx['status'] );
+            if ( $order->get_status() !== $target ) {
+                jfbwqa_write_log( "After-effects ({$slug}): setting order #" . $order->get_id() . " status to '{$target}'." );
+                $order->update_status(
+                    $target,
+                    sprintf( __( 'Status set by the "%s" event.', 'jfb-wc-quotes-advanced' ), $event_label )
+                );
+            }
+        }
+    } finally {
+        if ( ! empty( $fx['suppress_wc_emails'] ) ) {
+            jfbwqa_set_wc_status_email_suppression( false );
+        }
+    }
+}
+
+/**
  * Map of WC order action slug -> ('estimate' | 'quote') email type.
  * Used by the metabox JS to know which section to reveal, and by the
  * action handlers to know which override key to read.
@@ -4104,7 +4369,7 @@ function jfbwqa_render_action_composer_metabox( $post_or_order ) {
                         <th scope="row"><label><?php esc_html_e( 'Body (override)', 'jfb-wc-quotes-advanced' ); ?></label></th>
                         <td>
                             <textarea name="<?php echo esc_attr( $np ); ?>[body]" rows="8" style="width:100%; font-family: monospace, monospace; font-size: 12px;" placeholder="<?php echo esc_attr( wp_strip_all_tags( $sec['body_def'] ) ); ?>"><?php echo esc_textarea( $over['body'] ); ?></textarea>
-                            <p class="description"><?php esc_html_e( 'Placeholders: {order_number}, {customer_first_name}, {customer_name}, {site_title}, {[your_je_field_key]}, [Order Details Table]. Leave empty to use the body template from settings.', 'jfb-wc-quotes-advanced' ); ?></p>
+                            <p class="description"><?php esc_html_e( 'Placeholders: {order_number}, {customer_first_name}, {customer_name}, {site_title}, {[your_je_field_key]}, [Order Details Table], [Payment Link], [Payment URL], [Download Links]. Leave empty to use the body template from settings.', 'jfb-wc-quotes-advanced' ); ?></p>
                         </td>
                     </tr>
                     <tr>

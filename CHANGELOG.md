@@ -4,6 +4,37 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [2.8.0] - 2026-07-12
+
+### Added
+- **Per-event after-effects ("After this event runs").** Every plugin/custom
+  event tab gains three controls applied after a successful send:
+  - **Set order status** — move the order to any status.
+  - **Mark payment complete** — WooCommerce's `payment_complete()`: marks
+    paid, reduces stock (WC's own double-reduction guard applies), grants
+    download permissions, sets status to processing/completed. This is the
+    "Confirm Purchase" building block.
+  - **Suppress WooCommerce status emails** — blocks WC's customer-facing
+    Processing/Completed/On-hold/Refunded emails while the event changes
+    status, so they don't double up with ours. Admin "New order" emails are
+    untouched.
+- **New email placeholders** (work in all event bodies + composer overrides):
+  - `[Payment Link]` — styled "Pay for this order" button linking to the
+    order's customer payment page (`get_checkout_payment_url()`), for
+    "send them to a payment gateway for this exact order" flows.
+  - `[Payment URL]` — the raw payment page URL for custom markup.
+  - `[Download Links]` — the order's downloadable files as a link table;
+    renders nothing while the order is unpaid/has no downloads.
+
+### Notes
+- After-effect status changes can chain other events via the existing
+  status-change triggers (intended); the per-request dispatch guard prevents
+  any event from running twice for the same order.
+- The Prepared Quote email still sets "Quote Sent" first; an after-effect
+  status runs after it and wins.
+
+---
+
 ## [2.7.0] - 2026-07-12
 
 ### Added
