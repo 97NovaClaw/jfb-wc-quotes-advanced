@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI. HPOS-compatible; creates orders in-process via wc_create_order() (no REST credentials required).
- * Version:     2.8.0
+ * Version:     2.8.1
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '2.8.0' );
+define( 'JFBWQA_VERSION', '2.8.1' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_REGISTRY_OPTION', 'jfbwqa_event_registry' ); // Order-event registry (label, visible, order, source)
 define( 'JFBWQA_CUSTOM_EVENTS_OPTION', 'jfbwqa_custom_events' ); // User-created editable email events
@@ -1466,6 +1466,12 @@ function jfbwqa_send_custom_event_email( WC_Order $order, array $event, $slug = 
     $subject = str_replace( array_keys( $base_replacements ), array_values( $base_replacements ), (string) ( $event['email_subject'] ?? '' ) );
     $heading = str_replace( array_keys( $base_replacements ), array_values( $base_replacements ), (string) ( $event['email_heading'] ?? '' ) );
 
+    // v2.8.1: payment-complete effect runs before composing so paid-state
+    // placeholders ([Download Links]) render correctly.
+    if ( $slug !== '' ) {
+        jfbwqa_apply_event_pre_send_effects( $order, $slug );
+    }
+
     $body_with_breaks = wpautop( wptexturize( (string) ( $event['email_body'] ?? '' ) ) );
     $table_config     = wp_parse_args( is_array( $event['table'] ?? null ) ? $event['table'] : [], jfbwqa_default_table_config() );
     $email_body_final = jfbwqa_replace_email_placeholders( $body_with_breaks, $order, $table_config );
@@ -1849,6 +1855,10 @@ function jfbwqa_handle_send_prepared_quote_action( $order ) {
     // Apply wpautop to the raw body content (from override or settings).
     $body_content_with_html_breaks = wpautop( wptexturize( $body_content ) );
 
+    // v2.8.1: payment-complete effect runs before composing so paid-state
+    // placeholders ([Download Links]) render correctly.
+    jfbwqa_apply_event_pre_send_effects( $order, 'jfbwqa_send_prepared_quote' );
+
     // v1.28: resolve table config via the new helper - settings provide
     // the baseline; per-order override_table flips them when set.
     $quote_table_config = jfbwqa_resolve_table_config_for_send( $order, 'quote' );
@@ -1981,6 +1991,10 @@ function jfbwqa_handle_order_action( $order ) {
     $replacements = [ '{order_number}' => $order->get_order_number(), '{site_title}' => wp_specialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES ) ];
     $subject      = str_replace( array_keys( $replacements ), array_values( $replacements ), $subject_template );
     $heading      = str_replace( array_keys( $replacements ), array_values( $replacements ), $heading_template );
+
+    // v2.8.1: payment-complete effect runs before composing so paid-state
+    // placeholders ([Download Links]) render correctly.
+    jfbwqa_apply_event_pre_send_effects( $order, 'jfbwqa_send_estimate_email' );
 
     // v1.28: resolve table config via the new helper - settings provide
     // the baseline, per-order override_table flips them out when set.
@@ -2600,7 +2614,7 @@ function jfbwqa_settings_init() {
     add_settings_field( 'est_response_heading', __('Response heading', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_response_heading', 'type' => 'text', 'desc' => __('Heading shown above the custom message in the email. Default: Response.', 'jfb-wc-quotes-advanced')] );
     add_settings_field( 'est_hide_additional_details', __('Hide "Additional Details"', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_hide_additional_details', 'desc' => __('Hide the "Additional Details" section (extra JetEngine meta fields) in this email.', 'jfb-wc-quotes-advanced')] );
     add_settings_field( 'est_after_status', __('After send: set order status', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_status_select', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_after_status', 'desc' => __('Move the order to this status after the email is sent successfully.', 'jfb-wc-quotes-advanced')] );
-    add_settings_field( 'est_after_payment_complete', __('After send: mark payment complete', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_after_payment_complete', 'desc' => __('Runs WooCommerce\'s payment_complete(): marks the order paid, reduces stock, grants download permissions, and sets the status to processing/completed. Use for offline/manual payment confirmation.', 'jfb-wc-quotes-advanced')] );
+    add_settings_field( 'est_after_payment_complete', __('Mark payment complete', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_after_payment_complete', 'desc' => __('Runs WooCommerce\'s payment_complete(): marks the order paid, reduces stock, grants download permissions, and sets the status to processing/completed. Runs just before the email is composed so [Download Links] and paid-state info render correctly. Use for offline/manual payment confirmation.', 'jfb-wc-quotes-advanced')] );
     add_settings_field( 'est_suppress_wc_emails', __('Suppress WooCommerce status emails', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_suppress_wc_emails', 'desc' => __('While this event changes order status, block WooCommerce\'s own customer emails (Processing, Completed, On-hold, Refunded) so they don\'t double up with this one. Admin "New order" notifications are unaffected.', 'jfb-wc-quotes-advanced')] );
 
     // Quote Email Settings Section
@@ -2620,7 +2634,7 @@ function jfbwqa_settings_init() {
     add_settings_field( 'quote_response_heading', __('Response heading', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_text', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_response_heading', 'type' => 'text', 'desc' => __('Heading shown above the custom message in the email. Default: Response.', 'jfb-wc-quotes-advanced')] );
     add_settings_field( 'quote_hide_additional_details', __('Hide "Additional Details"', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_hide_additional_details', 'desc' => __('Hide the "Additional Details" section (extra JetEngine meta fields) in this email.', 'jfb-wc-quotes-advanced')] );
     add_settings_field( 'quote_after_status', __('After send: set order status', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_status_select', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_after_status', 'desc' => __('Move the order to this status after the email is sent successfully. Note: the quote email always sets "Quote Sent" first; a status chosen here is applied after and wins.', 'jfb-wc-quotes-advanced')] );
-    add_settings_field( 'quote_after_payment_complete', __('After send: mark payment complete', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_after_payment_complete', 'desc' => __('Runs WooCommerce\'s payment_complete(): marks the order paid, reduces stock, grants download permissions, and sets the status to processing/completed. Use for offline/manual payment confirmation.', 'jfb-wc-quotes-advanced')] );
+    add_settings_field( 'quote_after_payment_complete', __('Mark payment complete', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_after_payment_complete', 'desc' => __('Runs WooCommerce\'s payment_complete(): marks the order paid, reduces stock, grants download permissions, and sets the status to processing/completed. Runs just before the email is composed so [Download Links] and paid-state info render correctly. Use for offline/manual payment confirmation.', 'jfb-wc-quotes-advanced')] );
     add_settings_field( 'quote_suppress_wc_emails', __('Suppress WooCommerce status emails', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_suppress_wc_emails', 'desc' => __('While this event changes order status, block WooCommerce\'s own customer emails (Processing, Completed, On-hold, Refunded) so they don\'t double up with this one. Admin "New order" notifications are unaffected.', 'jfb-wc-quotes-advanced')] );
 
     /* -------------------------------------------------------------------
@@ -3147,7 +3161,7 @@ function jfbwqa_render_custom_event_fields( $slug, $event ) {
             <td>
                 <label>
                     <input type="checkbox" name="<?php echo esc_attr( $base ); ?>[after_payment_complete]" value="1" <?php checked( ! empty( $event['after_payment_complete'] ) ); ?> />
-                    <?php esc_html_e( 'Run WooCommerce\'s payment_complete(): marks the order paid, reduces stock, grants download permissions, and sets the status to processing/completed.', 'jfb-wc-quotes-advanced' ); ?>
+                    <?php esc_html_e( 'Run WooCommerce\'s payment_complete(): marks the order paid, reduces stock, grants download permissions, and sets the status to processing/completed. Runs just before the email is composed so [Download Links] renders correctly.', 'jfb-wc-quotes-advanced' ); ?>
                 </label>
             </td>
         </tr>
@@ -4081,6 +4095,44 @@ function jfbwqa_set_wc_status_email_suppression( $suppress ) {
 }
 
 /**
+ * v2.8.1: apply the payment-complete effect BEFORE the email is composed.
+ *
+ * Why pre-send: payment_complete() is what grants download permissions and
+ * marks the order paid. If it only ran after the send (as in v2.8.0), a
+ * "Confirm Purchase" email using [Download Links] rendered while the order
+ * was still unpaid and the placeholder came out empty (observed on order
+ * #767). Running it first means the email sees the paid order.
+ *
+ * Trade-off: if the send subsequently fails, the order is already marked
+ * paid - acceptable, because the admin fired this action *because* payment
+ * happened; the failure is recorded as an order note and the email can be
+ * re-sent.
+ */
+function jfbwqa_apply_event_pre_send_effects( $order, $slug ) {
+    if ( ! $order instanceof WC_Order ) {
+        $order = wc_get_order( (int) $order );
+    }
+    if ( ! $order ) {
+        return;
+    }
+    $fx = jfbwqa_get_event_after_effects( $slug );
+    if ( empty( $fx['payment_complete'] ) || $order->is_paid() ) {
+        return;
+    }
+    if ( ! empty( $fx['suppress_wc_emails'] ) ) {
+        jfbwqa_set_wc_status_email_suppression( true );
+    }
+    try {
+        jfbwqa_write_log( "Pre-send effects ({$slug}): calling payment_complete() for order #" . $order->get_id() );
+        $order->payment_complete();
+    } finally {
+        if ( ! empty( $fx['suppress_wc_emails'] ) ) {
+            jfbwqa_set_wc_status_email_suppression( false );
+        }
+    }
+}
+
+/**
  * Apply an event's after-effects to the order. Called by the senders only
  * after a successful send.
  *
@@ -4088,6 +4140,9 @@ function jfbwqa_set_wc_status_email_suppression( $suppress ) {
  * reduces stock - guarded by WC against double-reduction - grants download
  * permissions, and sets status to processing/completed), then the explicit
  * status override, so an admin-chosen status always wins.
+ * Note (v2.8.1): payment_complete normally already ran pre-send via
+ * jfbwqa_apply_event_pre_send_effects(); the is_paid() check below makes
+ * this a no-op in that case.
  *
  * Loop safety: a status change here can fire other events via the
  * status_changed trigger (intended - that's how chained flows work), but

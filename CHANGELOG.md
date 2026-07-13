@@ -4,6 +4,22 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [2.8.1] - 2026-07-12
+
+### Fixed
+- **`[Download Links]` was empty on "Mark payment complete" events.** In
+  v2.8.0 the payment-complete after-effect ran *after* the email was built,
+  so the email rendered while the order was still unpaid — no download
+  permissions existed yet and the placeholder produced nothing (observed on
+  order #767). The payment-complete effect now runs **just before the email
+  is composed** (still only when the event actually fires), so `[Download
+  Links]` and paid-state info render correctly. Status-change after-effects
+  still run post-send. If a send fails after payment completes, the payment
+  state stands (correct — payment did happen) and the failure is noted on
+  the order for a manual re-send.
+
+---
+
 ## [2.8.0] - 2026-07-12
 
 ### Added
