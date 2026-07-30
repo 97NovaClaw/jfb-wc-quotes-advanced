@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI. HPOS-compatible; creates orders in-process via wc_create_order() (no REST credentials required).
- * Version:     2.8.1
+ * Version:     2.9.0
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '2.8.1' );
+define( 'JFBWQA_VERSION', '2.9.0' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_REGISTRY_OPTION', 'jfbwqa_event_registry' ); // Order-event registry (label, visible, order, source)
 define( 'JFBWQA_CUSTOM_EVENTS_OPTION', 'jfbwqa_custom_events' ); // User-created editable email events
@@ -146,6 +146,16 @@ function jfbwqa_get_options() {
         // v2.7: include estimate-request orders in the WooCommerce sidebar
         // "+N" badge (which natively counts only "processing" orders).
         'count_estimates_in_menu_badge' => true,
+        // v2.9: Sender & Notifications. Blank From fields fall back to the
+        // site title and noreply@<site domain> (the pre-2.9 hardcoded values).
+        // Blank store owner falls back to the WordPress admin email.
+        'email_from_name'         => '',
+        'email_from_address'      => '',
+        'store_owner_email'       => '',
+        // v2.9: add a Reply-To pointing at the store owner on WooCommerce's
+        // own customer emails (Processing, Completed, ...), so replies don't
+        // dead-end at the no-reply From address.
+        'wc_reply_to_store_owner' => false,
         'email_subject'      => 'Your Estimate Request #{order_number}',
         'email_heading'      => 'Estimate Request Details',
         'email_reply_to'     => get_option('admin_email'),
@@ -159,6 +169,8 @@ function jfbwqa_get_options() {
         'est_after_status'            => '',
         'est_after_payment_complete'  => false,
         'est_suppress_wc_emails'      => false,
+        // v2.9: BCC the store owner a copy of this event's email.
+        'est_notify_owner'            => false,
         // Defaults for the new Quote Email
         'quote_email_subject'      => 'Your Quote #{order_number} is Ready',
         'quote_email_heading'      => 'Your Prepared Quote',
@@ -173,6 +185,8 @@ function jfbwqa_get_options() {
         'quote_after_status'            => '',
         'quote_after_payment_complete'  => false,
         'quote_suppress_wc_emails'      => false,
+        // v2.9: BCC the store owner a copy of this event's email.
+        'quote_notify_owner'            => false,
         'display_discount_in_quote' => false, // [DEPRECATED v1.27] superseded by quote_table_show_discount, kept for back-compat reads.
 
         // v1.27: Estimate Request email - Order Details Table defaults.
@@ -1287,6 +1301,83 @@ function jfbwqa_save_event_registry( array $registry ) {
 }
 
 /* =============================================================================
+   7b.5) Sender & Notifications helpers (v2.9)
+   -----------------------------------------------------------------------------
+   All three plugin senders (estimate, quote, custom events) share one From
+   identity and one "store owner" notification address. Blank settings keep
+   the pre-2.9 behavior: From = site title <noreply@site-domain>, store
+   owner = the WordPress admin email.
+   ============================================================================= */
+
+/**
+ * Resolve the From name/address used by every plugin-sent email.
+ *
+ * @return array{0:string,1:string} [ $from_name, $from_email ]
+ */
+function jfbwqa_get_email_from_parts() {
+    $options = jfbwqa_get_options();
+
+    $from_email = sanitize_email( (string) ( $options['email_from_address'] ?? '' ) );
+    if ( empty( $from_email ) || ! is_email( $from_email ) ) {
+        $site_domain = (string) wp_parse_url( get_site_url(), PHP_URL_HOST );
+        if ( substr( $site_domain, 0, 4 ) === 'www.' ) {
+            $site_domain = substr( $site_domain, 4 );
+        }
+        $from_email = 'noreply@' . $site_domain;
+    }
+
+    $from_name = trim( (string) ( $options['email_from_name'] ?? '' ) );
+    if ( $from_name === '' ) {
+        $from_name = wp_specialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES );
+    }
+
+    return [ $from_name, $from_email ];
+}
+
+/**
+ * The store owner / notifications address. Used as the BCC target for
+ * per-event "copy the store owner" toggles and as the Reply-To for
+ * WooCommerce customer emails when that option is enabled.
+ */
+function jfbwqa_get_store_owner_email() {
+    $options = jfbwqa_get_options();
+    $email   = sanitize_email( (string) ( $options['store_owner_email'] ?? '' ) );
+    if ( ! empty( $email ) && is_email( $email ) ) {
+        return $email;
+    }
+    return (string) get_option( 'admin_email' );
+}
+
+/**
+ * v2.9: When enabled, add a store-owner Reply-To to WooCommerce's own
+ * customer emails. Their From is a no-reply address, so without this a
+ * customer hitting "reply" on e.g. the Processing email goes nowhere.
+ * Admin emails (New/Cancelled/Failed order) are skipped - WooCommerce
+ * already sets their Reply-To to the customer.
+ */
+add_filter( 'woocommerce_email_headers', 'jfbwqa_wc_email_reply_to_store_owner', 10, 4 );
+function jfbwqa_wc_email_reply_to_store_owner( $headers, $email_id = '', $order = null, $email = null ) {
+    $options = jfbwqa_get_options();
+    if ( empty( $options['wc_reply_to_store_owner'] ) || ! is_string( $headers ) ) {
+        return $headers;
+    }
+    if ( in_array( $email_id, [ 'new_order', 'cancelled_order', 'failed_order' ], true ) ) {
+        return $headers;
+    }
+    if ( $email && is_callable( [ $email, 'is_customer_email' ] ) && ! $email->is_customer_email() ) {
+        return $headers;
+    }
+    if ( stripos( $headers, 'reply-to:' ) !== false ) {
+        return $headers; // Something already set one; don't double up.
+    }
+    $owner = jfbwqa_get_store_owner_email();
+    if ( $owner && is_email( $owner ) ) {
+        $headers .= 'Reply-to: ' . $owner . "\r\n";
+    }
+    return $headers;
+}
+
+/* =============================================================================
    7c) Custom Editable Email Events (v2.3) - CRUD + send
    -----------------------------------------------------------------------------
    Admins can create their own order-action email events (e.g. a "Form
@@ -1326,6 +1417,8 @@ function jfbwqa_default_custom_event( $label = '' ) {
         'after_status'            => '',
         'after_payment_complete'  => false,
         'suppress_wc_emails'      => false,
+        // v2.9: BCC the store owner a copy of this event's email.
+        'notify_owner'            => false,
         'table'          => [
             'show_image'       => true,
             'show_unit_price'  => true,
@@ -1509,14 +1602,9 @@ function jfbwqa_send_custom_event_email( WC_Order $order, array $event, $slug = 
         $email_html_content = $mailer ? $mailer->wrap_message( $heading, $email_html_content ) : $email_html_content;
     }
 
-    $site_domain = wp_parse_url( get_site_url(), PHP_URL_HOST );
-    if ( substr( $site_domain, 0, 4 ) === 'www.' ) {
-        $site_domain = substr( $site_domain, 4 );
-    }
-    $from_email = 'noreply@' . $site_domain;
-    $from_name  = wp_specialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES );
-    $reply_to   = sanitize_email( (string) ( $event['email_reply_to'] ?? '' ) );
-    $cc         = sanitize_email( (string) ( $event['email_cc'] ?? '' ) );
+    list( $from_name, $from_email ) = jfbwqa_get_email_from_parts();
+    $reply_to = sanitize_email( (string) ( $event['email_reply_to'] ?? '' ) );
+    $cc       = sanitize_email( (string) ( $event['email_cc'] ?? '' ) );
 
     $headers   = [ 'Content-Type: text/html; charset=UTF-8' ];
     $headers[] = 'From: ' . $from_name . ' <' . $from_email . '>';
@@ -1525,6 +1613,9 @@ function jfbwqa_send_custom_event_email( WC_Order $order, array $event, $slug = 
     }
     if ( ! empty( $cc ) && is_email( $cc ) ) {
         $headers[] = 'Cc: <' . $cc . '>';
+    }
+    if ( ! empty( $event['notify_owner'] ) ) {
+        $headers[] = 'Bcc: <' . jfbwqa_get_store_owner_email() . '>';
     }
 
     jfbwqa_write_log( "Sending custom event '{$label}' email to {$recipient_email} for order #{$order_id} with Subject: {$subject}" );
@@ -1895,17 +1986,13 @@ function jfbwqa_handle_send_prepared_quote_action( $order ) {
         $email_html_content = $mailer ? $mailer->wrap_message($heading, $email_html_content) : $email_html_content;
     }
 
-    $site_domain = wp_parse_url(get_site_url(), PHP_URL_HOST);
-    if (substr($site_domain, 0, 4) === 'www.') {
-        $site_domain = substr($site_domain, 4);
-    }
-    $from_email_override = 'noreply@' . $site_domain;
-    $from_name_override = wp_specialchars_decode(get_bloginfo('name'), ENT_QUOTES);
+    list( $from_name_override, $from_email_override ) = jfbwqa_get_email_from_parts();
 
     $headers = ["Content-Type: text/html; charset=UTF-8"];
     $headers[] = "From: " . $from_name_override . " <" . $from_email_override . ">";
     if ( !empty($reply_to_email) && is_email($reply_to_email) ) $headers[] = "Reply-To: <{$reply_to_email}>";
     if ( !empty($cc_email) && is_email($cc_email) ) $headers[] = "Cc: <{$cc_email}>"; // Use $cc_email which now holds value from modal or settings
+    if ( ! empty( $options['quote_notify_owner'] ) ) $headers[] = 'Bcc: <' . jfbwqa_get_store_owner_email() . '>'; // v2.9
 
     jfbwqa_write_log("Sending Prepared Quote email to {$recipient_email} for order #{$order_id} with Subject: {$subject}");
     $sent = wp_mail( $recipient_email, $subject, $email_html_content, $headers );
@@ -2069,20 +2156,16 @@ function jfbwqa_handle_order_action( $order ) {
     // Prepare Headers
     $headers = ["Content-Type: text/html; charset=UTF-8"];
     
-    // Dynamically set From address to noreply@current_domain
-    $site_domain = wp_parse_url(get_site_url(), PHP_URL_HOST);
-    // Remove www. if it exists to keep the domain cleaner for the email, though it usually doesn't matter for the local part
-    if (substr($site_domain, 0, 4) === 'www.') {
-        $site_domain = substr($site_domain, 4);
-    }
-    $from_email_override = 'noreply@' . $site_domain;
-    $from_name_override = wp_specialchars_decode(get_bloginfo('name'), ENT_QUOTES); // Use Site Title as From Name
+    // v2.9: From identity comes from the Sender & Notifications settings
+    // (falls back to site title <noreply@site-domain> when blank).
+    list( $from_name_override, $from_email_override ) = jfbwqa_get_email_from_parts();
 
     $headers[] = "From: " . $from_name_override . " <" . $from_email_override . ">";
 
     // Use original Reply-To and CC from settings if they are valid
     if ( !empty($reply_to_email) && is_email($reply_to_email) ) $headers[] = "Reply-To: <{$reply_to_email}>";
     if ( !empty($cc_email) && is_email($cc_email) ) $headers[] = "Cc: <{$cc_email}>";
+    if ( ! empty( $options['est_notify_owner'] ) ) $headers[] = 'Bcc: <' . jfbwqa_get_store_owner_email() . '>'; // v2.9
 
     // Send Email
     jfbwqa_write_log("Sending estimate email to {$recipient_email} for order #{$order_id}. Custom message included: " . (!empty($custom_admin_message) ? 'Yes' : 'No'));
@@ -2616,6 +2699,7 @@ function jfbwqa_settings_init() {
     add_settings_field( 'est_after_status', __('After send: set order status', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_status_select', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_after_status', 'desc' => __('Move the order to this status after the email is sent successfully.', 'jfb-wc-quotes-advanced')] );
     add_settings_field( 'est_after_payment_complete', __('Mark payment complete', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_after_payment_complete', 'desc' => __('Runs WooCommerce\'s payment_complete(): marks the order paid, reduces stock, grants download permissions, and sets the status to processing/completed. Runs just before the email is composed so [Download Links] and paid-state info render correctly. Use for offline/manual payment confirmation.', 'jfb-wc-quotes-advanced')] );
     add_settings_field( 'est_suppress_wc_emails', __('Suppress WooCommerce status emails', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_suppress_wc_emails', 'desc' => __('While this event changes order status, block WooCommerce\'s own customer emails (Processing, Completed, On-hold, Refunded) so they don\'t double up with this one. Admin "New order" notifications are unaffected.', 'jfb-wc-quotes-advanced')] );
+    add_settings_field( 'est_notify_owner', __('Copy the store owner', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_email', ['key' => 'est_notify_owner', 'desc' => __('BCC a copy of this email to the store owner address (Advanced > Sender & Notifications).', 'jfb-wc-quotes-advanced')] );
 
     // Quote Email Settings Section
     add_settings_section(
@@ -2636,6 +2720,7 @@ function jfbwqa_settings_init() {
     add_settings_field( 'quote_after_status', __('After send: set order status', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_status_select', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_after_status', 'desc' => __('Move the order to this status after the email is sent successfully. Note: the quote email always sets "Quote Sent" first; a status chosen here is applied after and wins.', 'jfb-wc-quotes-advanced')] );
     add_settings_field( 'quote_after_payment_complete', __('Mark payment complete', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_after_payment_complete', 'desc' => __('Runs WooCommerce\'s payment_complete(): marks the order paid, reduces stock, grants download permissions, and sets the status to processing/completed. Runs just before the email is composed so [Download Links] and paid-state info render correctly. Use for offline/manual payment confirmation.', 'jfb-wc-quotes-advanced')] );
     add_settings_field( 'quote_suppress_wc_emails', __('Suppress WooCommerce status emails', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_suppress_wc_emails', 'desc' => __('While this event changes order status, block WooCommerce\'s own customer emails (Processing, Completed, On-hold, Refunded) so they don\'t double up with this one. Admin "New order" notifications are unaffected.', 'jfb-wc-quotes-advanced')] );
+    add_settings_field( 'quote_notify_owner', __('Copy the store owner', 'jfb-wc-quotes-advanced'), 'jfbwqa_render_field_checkbox', JFBWQA_SETTINGS_SLUG, 'jfbwqa_section_quote_email', ['key' => 'quote_notify_owner', 'desc' => __('BCC a copy of this email to the store owner address (Advanced > Sender & Notifications).', 'jfb-wc-quotes-advanced')] );
 
     /* -------------------------------------------------------------------
      * v1.27: Order Details Table sections - one per email type.
@@ -2725,6 +2810,50 @@ function jfbwqa_settings_init() {
         ]
     );
 
+    // v2.9: Sender & Notifications section (Advanced tab).
+    add_settings_section(
+        'jfbwqa_section_sender',
+        __( 'Sender & Notifications', 'jfb-wc-quotes-advanced' ),
+        'jfbwqa_render_section_sender_desc',
+        JFBWQA_SETTINGS_SLUG
+    );
+    $jfbwqa_domain_for_placeholder = (string) wp_parse_url( get_site_url(), PHP_URL_HOST );
+    if ( substr( $jfbwqa_domain_for_placeholder, 0, 4 ) === 'www.' ) {
+        $jfbwqa_domain_for_placeholder = substr( $jfbwqa_domain_for_placeholder, 4 );
+    }
+    add_settings_field(
+        'email_from_name',
+        __( 'From name', 'jfb-wc-quotes-advanced' ),
+        'jfbwqa_render_field_text',
+        JFBWQA_SETTINGS_SLUG,
+        'jfbwqa_section_sender',
+        [ 'key' => 'email_from_name', 'type' => 'text', 'placeholder' => get_bloginfo( 'name' ), 'desc' => __( 'Display name on all emails this plugin sends. Blank = the site title.', 'jfb-wc-quotes-advanced' ) ]
+    );
+    add_settings_field(
+        'email_from_address',
+        __( 'From address', 'jfb-wc-quotes-advanced' ),
+        'jfbwqa_render_field_text',
+        JFBWQA_SETTINGS_SLUG,
+        'jfbwqa_section_sender',
+        [ 'key' => 'email_from_address', 'type' => 'email', 'placeholder' => 'noreply@' . $jfbwqa_domain_for_placeholder, 'desc' => __( 'Address all plugin emails are sent from. Use a no-reply mailbox on your own domain so SPF/DKIM pass. Blank = noreply@your-domain.', 'jfb-wc-quotes-advanced' ) ]
+    );
+    add_settings_field(
+        'store_owner_email',
+        __( 'Store owner email', 'jfb-wc-quotes-advanced' ),
+        'jfbwqa_render_field_text',
+        JFBWQA_SETTINGS_SLUG,
+        'jfbwqa_section_sender',
+        [ 'key' => 'store_owner_email', 'type' => 'email', 'placeholder' => get_option( 'admin_email' ), 'desc' => __( 'Receives BCC copies of event emails (enable per event with "Copy the store owner") and replies to WooCommerce customer emails when the option below is on. Blank = the WordPress admin email.', 'jfb-wc-quotes-advanced' ) ]
+    );
+    add_settings_field(
+        'wc_reply_to_store_owner',
+        __( 'Replies go to the store owner', 'jfb-wc-quotes-advanced' ),
+        'jfbwqa_render_field_checkbox',
+        JFBWQA_SETTINGS_SLUG,
+        'jfbwqa_section_sender',
+        [ 'key' => 'wc_reply_to_store_owner', 'desc' => __( 'Add a Reply-To with the store owner address to WooCommerce\'s own customer emails (Processing, Completed, etc.), so replies don\'t dead-end at the no-reply From address. This plugin\'s emails already use their per-event Reply-To fields.', 'jfb-wc-quotes-advanced' ) ]
+    );
+
     // Email Deliverability Section
     add_settings_section(
         'jfbwqa_section_deliverability',
@@ -2761,6 +2890,9 @@ function jfbwqa_render_section_est_table_desc() {
 function jfbwqa_render_section_quote_table_desc() {
     echo '<p>' . esc_html__( 'These checkboxes control what appears in the [Order Details Table] placeholder when the prepared-quote email is sent. They serve as defaults; the Email Action Composer metabox on the order edit screen can override them per send.', 'jfb-wc-quotes-advanced' ) . '</p>';
     echo '<p>' . esc_html__( 'Recommended: enable line totals, subtotal, shipping, fees, and grand total. Discount and tax can be enabled if your store applies them.', 'jfb-wc-quotes-advanced' ) . '</p>';
+}
+function jfbwqa_render_section_sender_desc() {
+    echo '<p>' . esc_html__( 'One sender identity for every email this plugin sends (Estimate Request, Prepared Quote, and custom events), plus the store owner address used for notification copies and replies.', 'jfb-wc-quotes-advanced' ) . '</p>';
 }
 function jfbwqa_render_section_deliverability_desc() {
     echo '<p>' . esc_html__('To significantly improve the chances of your estimate emails reaching the inbox and not being marked as spam, it is highly recommended to configure certain DNS records for your domain (the domain emails are sent from, e.g., luxeandpetals.com). This plugin now sends emails from "noreply@yourdomain.com".', 'jfb-wc-quotes-advanced') . '</p>';
@@ -3107,6 +3239,15 @@ function jfbwqa_render_custom_event_fields( $slug, $event ) {
             <td><input type="email" id="<?php echo esc_attr( $slug ); ?>_cc" class="regular-text" name="<?php echo esc_attr( $base ); ?>[email_cc]" value="<?php echo esc_attr( $event['email_cc'] ); ?>" /></td>
         </tr>
         <tr>
+            <th scope="row"><?php esc_html_e( 'Copy the store owner', 'jfb-wc-quotes-advanced' ); ?></th>
+            <td>
+                <label>
+                    <input type="checkbox" name="<?php echo esc_attr( $base ); ?>[notify_owner]" value="1" <?php checked( ! empty( $event['notify_owner'] ) ); ?> />
+                    <?php echo esc_html( sprintf( __( 'BCC a copy of this email to the store owner (%s, set under Advanced > Sender & Notifications).', 'jfb-wc-quotes-advanced' ), jfbwqa_get_store_owner_email() ) ); ?>
+                </label>
+            </td>
+        </tr>
+        <tr>
             <th scope="row"><label for="<?php echo esc_attr( $slug ); ?>_body"><?php esc_html_e( 'Email Body', 'jfb-wc-quotes-advanced' ); ?></label></th>
             <td>
                 <textarea id="<?php echo esc_attr( $slug ); ?>_body" name="<?php echo esc_attr( $base ); ?>[email_body]" rows="8" class="large-text code"><?php echo esc_textarea( $event['email_body'] ); ?></textarea>
@@ -3248,6 +3389,9 @@ function jfbwqa_sanitize_custom_events( $input ) {
         $event['after_payment_complete'] = ! empty( $data['after_payment_complete'] );
         $event['suppress_wc_emails']     = ! empty( $data['suppress_wc_emails'] );
 
+        // v2.9: store owner copy.
+        $event['notify_owner'] = ! empty( $data['notify_owner'] );
+
         $table = [];
         foreach ( $table_keys as $tkey ) {
             $table[ $tkey ] = ! empty( $data['table'][ $tkey ] );
@@ -3280,6 +3424,14 @@ function jfbwqa_sanitize_options( $input ) {
     $output['disable_wc_add_to_cart_notice'] = isset( $input['disable_wc_add_to_cart_notice'] ) ? true : false;
     $output['hide_order_custom_fields']      = isset( $input['hide_order_custom_fields'] ) ? true : false;
     $output['count_estimates_in_menu_badge'] = isset( $input['count_estimates_in_menu_badge'] ) ? true : false;
+
+    // v2.9: Sender & Notifications.
+    $output['email_from_name']         = sanitize_text_field( $input['email_from_name'] ?? '' );
+    $output['email_from_address']      = sanitize_email( $input['email_from_address'] ?? '' );
+    $output['store_owner_email']       = sanitize_email( $input['store_owner_email'] ?? '' );
+    $output['wc_reply_to_store_owner'] = isset( $input['wc_reply_to_store_owner'] ) ? true : false;
+    $output['est_notify_owner']        = isset( $input['est_notify_owner'] ) ? true : false;
+    $output['quote_notify_owner']      = isset( $input['quote_notify_owner'] ) ? true : false;
 
     // v2.6: per-event Response box + Additional Details toggles (estimate + quote).
     $output['est_enable_response_box']       = isset( $input['est_enable_response_box'] ) ? true : false;
@@ -3886,7 +4038,7 @@ function jfbwqa_render_settings_page() {
 
                 <div class="jfbwqa-pane-panel jfbwqa-pane-panel--advanced" data-panel="advanced" hidden>
                     <h2><?php esc_html_e( 'Advanced', 'jfb-wc-quotes-advanced' ); ?></h2>
-                    <?php jfbwqa_render_settings_sections_by_id( [ 'jfbwqa_section_order_screen', 'jfbwqa_section_deliverability' ] ); ?>
+                    <?php jfbwqa_render_settings_sections_by_id( [ 'jfbwqa_section_order_screen', 'jfbwqa_section_sender', 'jfbwqa_section_deliverability' ] ); ?>
                 </div>
 
                     <div class="jfbwqa-save-bar">

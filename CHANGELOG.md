@@ -4,6 +4,34 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [2.9.0] - 2026-07-29
+
+### Added
+- **Sender & Notifications settings (Advanced tab).** One place to control
+  the sender identity for every email this plugin sends:
+  - **From name / From address** — previously hardcoded to
+    `site title <noreply@site-domain>` in all three senders; those remain
+    the fallbacks when the fields are blank, so existing installs behave
+    identically until configured.
+  - **Store owner email** — the store's notification address (falls back
+    to the WordPress admin email).
+- **Per-event "Copy the store owner" toggle** on the Estimate Request,
+  Prepared Quote, and every custom event tab. When enabled, the event's
+  customer email is BCC'd to the store owner address. Off by default.
+- **"Replies go to the store owner" option.** Adds a Reply-To header with
+  the store owner address to WooCommerce's own customer emails
+  (Processing, Completed, etc.), whose From is a no-reply address —
+  without this, a customer hitting "reply" on those emails goes nowhere.
+  Admin New/Cancelled/Failed order emails are skipped (WooCommerce already
+  sets their Reply-To to the customer). Off by default.
+
+### Changed
+- All three plugin senders (estimate, quote, custom events) now resolve
+  their From header through the shared `jfbwqa_get_email_from_parts()`
+  helper instead of three copies of the same hardcoded block.
+
+---
+
 ## [2.8.1] - 2026-07-12
 
 ### Fixed
