@@ -3,7 +3,7 @@
  * Plugin Name: JFB WC Quotes Advanced
  * Plugin URI:  https://legworkmedia.ca
  * Description: Advanced integration for JetFormBuilder & WooCommerce. Map fields (incl. JE meta), custom "Estimate Request" email configured in plugin settings and triggered via Order Action, dynamic cart shortcode, custom order status. Admin settings page with integrated field mapping UI. HPOS-compatible; creates orders in-process via wc_create_order() (no REST credentials required).
- * Version:     2.10.0
+ * Version:     2.11.0
  * Author:      legworkmedia
  * Author URI:  https://legworkmedia.ca
  * License:     GPL2
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // No direct access.
 }
 
-define( 'JFBWQA_VERSION', '2.10.0' );
+define( 'JFBWQA_VERSION', '2.11.0' );
 define( 'JFBWQA_OPTION_NAME', 'jfbwqa_options' ); // Option key for general settings
 define( 'JFBWQA_REGISTRY_OPTION', 'jfbwqa_event_registry' ); // Order-event registry (label, visible, order, source)
 define( 'JFBWQA_CUSTOM_EVENTS_OPTION', 'jfbwqa_custom_events' ); // User-created editable email events
@@ -152,9 +152,12 @@ function jfbwqa_get_options() {
         'email_from_name'         => '',
         'email_from_address'      => '',
         'store_owner_email'       => '',
-        // v2.10: optional developer address; when non-empty it is CC'd on
+        // v2.10: optional developer address; when non-empty it is copied on
         // every email this plugin sends. Blank = feature off.
         'developer_email'         => '',
+        // v2.11: deliver the developer copy as a hidden BCC instead of a
+        // customer-visible CC.
+        'developer_email_bcc'     => false,
         // v2.9: add a Reply-To pointing at the store owner on WooCommerce's
         // own customer emails (Processing, Completed, ...), so replies don't
         // dead-end at the no-reply From address.
@@ -1353,12 +1356,27 @@ function jfbwqa_get_store_owner_email() {
 
 /**
  * v2.10: Optional developer copy. Returns a valid email or '' (feature off).
- * When set, every plugin sender adds it as a CC.
+ * When set, every plugin sender copies it on outgoing emails.
  */
 function jfbwqa_get_developer_email() {
     $options = jfbwqa_get_options();
     $email   = sanitize_email( (string) ( $options['developer_email'] ?? '' ) );
     return ( ! empty( $email ) && is_email( $email ) ) ? $email : '';
+}
+
+/**
+ * v2.11: The complete developer-copy header for wp_mail(), or '' when the
+ * feature is off. Honors the CC-vs-BCC delivery setting so all three
+ * senders stay in sync.
+ */
+function jfbwqa_get_developer_copy_header() {
+    $email = jfbwqa_get_developer_email();
+    if ( $email === '' ) {
+        return '';
+    }
+    $options = jfbwqa_get_options();
+    $field   = ! empty( $options['developer_email_bcc'] ) ? 'Bcc' : 'Cc';
+    return $field . ': <' . $email . '>';
 }
 
 /**
@@ -1630,8 +1648,8 @@ function jfbwqa_send_custom_event_email( WC_Order $order, array $event, $slug = 
     if ( ! empty( $event['notify_owner'] ) ) {
         $headers[] = 'Bcc: <' . jfbwqa_get_store_owner_email() . '>';
     }
-    if ( jfbwqa_get_developer_email() !== '' ) {
-        $headers[] = 'Cc: <' . jfbwqa_get_developer_email() . '>'; // v2.10
+    if ( jfbwqa_get_developer_copy_header() !== '' ) {
+        $headers[] = jfbwqa_get_developer_copy_header(); // v2.10/2.11
     }
 
     jfbwqa_write_log( "Sending custom event '{$label}' email to {$recipient_email} for order #{$order_id} with Subject: {$subject}" );
@@ -2009,7 +2027,7 @@ function jfbwqa_handle_send_prepared_quote_action( $order ) {
     if ( !empty($reply_to_email) && is_email($reply_to_email) ) $headers[] = "Reply-To: <{$reply_to_email}>";
     if ( !empty($cc_email) && is_email($cc_email) ) $headers[] = "Cc: <{$cc_email}>"; // Use $cc_email which now holds value from modal or settings
     if ( ! empty( $options['quote_notify_owner'] ) ) $headers[] = 'Bcc: <' . jfbwqa_get_store_owner_email() . '>'; // v2.9
-    if ( jfbwqa_get_developer_email() !== '' ) $headers[] = 'Cc: <' . jfbwqa_get_developer_email() . '>'; // v2.10
+    if ( jfbwqa_get_developer_copy_header() !== '' ) $headers[] = jfbwqa_get_developer_copy_header(); // v2.10/2.11
 
     jfbwqa_write_log("Sending Prepared Quote email to {$recipient_email} for order #{$order_id} with Subject: {$subject}");
     $sent = wp_mail( $recipient_email, $subject, $email_html_content, $headers );
@@ -2183,7 +2201,7 @@ function jfbwqa_handle_order_action( $order ) {
     if ( !empty($reply_to_email) && is_email($reply_to_email) ) $headers[] = "Reply-To: <{$reply_to_email}>";
     if ( !empty($cc_email) && is_email($cc_email) ) $headers[] = "Cc: <{$cc_email}>";
     if ( ! empty( $options['est_notify_owner'] ) ) $headers[] = 'Bcc: <' . jfbwqa_get_store_owner_email() . '>'; // v2.9
-    if ( jfbwqa_get_developer_email() !== '' ) $headers[] = 'Cc: <' . jfbwqa_get_developer_email() . '>'; // v2.10
+    if ( jfbwqa_get_developer_copy_header() !== '' ) $headers[] = jfbwqa_get_developer_copy_header(); // v2.10/2.11
 
     // Send Email
     jfbwqa_write_log("Sending estimate email to {$recipient_email} for order #{$order_id}. Custom message included: " . (!empty($custom_admin_message) ? 'Yes' : 'No'));
@@ -2869,7 +2887,15 @@ function jfbwqa_settings_init() {
         'jfbwqa_render_field_text',
         JFBWQA_SETTINGS_SLUG,
         'jfbwqa_section_sender',
-        [ 'key' => 'developer_email', 'type' => 'email', 'placeholder' => 'e.g., dev@example.com', 'desc' => __( 'Optional. When filled in, this address is CC\'d on every email this plugin sends (Estimate Request, Prepared Quote, and custom events). Note: a CC is visible to the customer. Leave blank to turn off.', 'jfb-wc-quotes-advanced' ) ]
+        [ 'key' => 'developer_email', 'type' => 'email', 'placeholder' => 'e.g., dev@example.com', 'desc' => __( 'Optional. When filled in, this address is copied on every email this plugin sends (Estimate Request, Prepared Quote, and custom events). Leave blank to turn off.', 'jfb-wc-quotes-advanced' ) ]
+    );
+    add_settings_field(
+        'developer_email_bcc',
+        __( 'Developer copy as BCC', 'jfb-wc-quotes-advanced' ),
+        'jfbwqa_render_field_checkbox',
+        JFBWQA_SETTINGS_SLUG,
+        'jfbwqa_section_sender',
+        [ 'key' => 'developer_email_bcc', 'desc' => __( 'Deliver the developer copy as a hidden BCC instead of a customer-visible CC.', 'jfb-wc-quotes-advanced' ) ]
     );
     add_settings_field(
         'wc_reply_to_store_owner',
@@ -3456,6 +3482,7 @@ function jfbwqa_sanitize_options( $input ) {
     $output['email_from_address']      = sanitize_email( $input['email_from_address'] ?? '' );
     $output['store_owner_email']       = sanitize_email( $input['store_owner_email'] ?? '' );
     $output['developer_email']         = sanitize_email( $input['developer_email'] ?? '' ); // v2.10
+    $output['developer_email_bcc']     = isset( $input['developer_email_bcc'] ) ? true : false; // v2.11
     $output['wc_reply_to_store_owner'] = isset( $input['wc_reply_to_store_owner'] ) ? true : false;
     $output['est_notify_owner']        = isset( $input['est_notify_owner'] ) ? true : false;
     $output['quote_notify_owner']      = isset( $input['quote_notify_owner'] ) ? true : false;

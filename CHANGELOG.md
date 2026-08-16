@@ -4,6 +4,16 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [2.11.0] - 2026-08-16
+
+### Added
+- **Developer copy as BCC.** New checkbox under the Developer email field
+  (Advanced > Sender & Notifications). Unchecked (default) keeps the
+  v2.10 behavior of a customer-visible CC; checked delivers the developer
+  copy as a hidden BCC instead.
+
+---
+
 ## [2.10.0] - 2026-08-16
 
 ### Added
