@@ -4,6 +4,18 @@ All notable changes to JFB WC Quotes Advanced are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [2.10.0] - 2026-08-16
+
+### Added
+- **Developer email (CC).** New optional field in Advanced > Sender &
+  Notifications. When filled in, that address is CC'd on every email the
+  plugin sends (Estimate Request, Prepared Quote, and custom events) —
+  useful for a developer monitoring the pipeline. Blank (the default)
+  turns the feature off. Note: unlike the store owner BCC, a CC is
+  visible to the recipient.
+
+---
+
 ## [2.9.0] - 2026-07-29
 
 ### Added
